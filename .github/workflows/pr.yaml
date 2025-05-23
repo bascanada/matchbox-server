@@ -1,0 +1,39 @@
+name: PR 
+
+
+on:
+  pull_request:
+    branches:
+      - main
+    types:
+      - opened
+      - synchronize
+      - reopened
+
+env: 
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+
+jobs:
+  build_and_test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+      - name: Dependencies
+        run: cargo vendor
+      - name: Test
+        run: make test
+      - name: Style Check
+        run: make format
+      - name: Build matchbox
+        run: make build_docker_matchbox_server 
