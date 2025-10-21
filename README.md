@@ -13,3 +13,19 @@ You can also use the room id for scoping what kind of players you want to match.
 ```sh
 cargo run
 ```
+
+## Client-Side Authentication Demo
+
+This repository includes a command-line tool to demonstrate the client-side authentication flow.
+
+### How to Use
+
+1.  **Get a challenge from the server:**
+    ```sh
+    CHALLENGE=$(curl -s -X POST http://localhost:3536/auth/challenge | jq -r .challenge)
+    ```
+
+2.  **Run the script to generate the login payload:**
+    ```sh
+    cargo run --example client-auth-demo -- -u myuser -p mypassword -c "$CHALLENGE"
+    ```
