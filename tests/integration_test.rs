@@ -67,14 +67,18 @@ async fn test_authentication_flow_invalid_signature() {
     let body: Value = response.json().await.unwrap();
     let challenge = body["challenge"].as_str().unwrap();
 
-    // 2. Generate login payload with a bad password
-    let login_payload = helpers::generate_login_payload("testuser", "wrongpass", challenge).unwrap();
+    // 2. Generate a valid login payload
+    let login_payload_str = helpers::generate_login_payload("testuser", "testpass", challenge).unwrap();
+    let mut login_payload: Value = serde_json::from_str(&login_payload_str).unwrap();
 
-    // 3. Log in
+    // 3. Tamper with the signature, replacing it with a bogus value
+    login_payload["signature_b64"] = Value::String("aW52YWxpZCBzaWduYXR1cmU=".to_string()); // "invalid signature" in base64
+
+    // 4. Log in with the invalid signature
     let response = client
         .post(format!("http://{}/auth/login", addr))
         .header("Content-Type", "application/json")
-        .body(login_payload)
+        .body(login_payload.to_string())
         .send()
         .await
         .unwrap();
