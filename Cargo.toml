@@ -26,6 +26,11 @@ uuid = { version = "1.4", features = ["serde", "v4"] }
 clap = { version = "4.3", features = ["derive", "env"] }
 thiserror = "2.0"
 tokio-stream = "0.1"
+argon2 = "0.5"
+ed25519-dalek = { version = "2.1", features = ["serde"] }
+jsonwebtoken = "9.2"
+rand = "0.8"
+base64 = "0.21"
 
 [dev-dependencies]
 tokio-tungstenite = "0.24"
