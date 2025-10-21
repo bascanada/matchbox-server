@@ -2,12 +2,9 @@ use crate::state::{Peer, ServerState};
 use async_trait::async_trait;
 use axum::extract::ws::Message;
 use futures::StreamExt;
-use matchbox_protocol::{JsonPeerEvent, PeerRequest};
-use matchbox_signaling::{
-    common_logic::parse_request, ClientRequestError, NoCallbacks, SignalingTopology, WsStateMeta,
-};
-use tracing::{error, info, warn};
-use uuid::Uuid;
+use matchbox_protocol::{JsonPeerEvent, PeerId};
+use matchbox_signaling::{NoCallbacks, SignalingTopology, WsStateMeta};
+use tracing::{error, info};
 
 #[derive(Debug, Default)]
 pub struct MatchmakingDemoTopology;
@@ -20,19 +17,34 @@ impl SignalingTopology<NoCallbacks, ServerState> for MatchmakingDemoTopology {
             sender,
             mut receiver,
             mut state,
-            path,
             ..
         } = upgrade;
 
-        let lobby_id = path
-            .clone()
-            .and_then(|p| p.strip_prefix("/ws/").map(String::from))
-            .and_then(|s| Uuid::parse_str(&s).ok());
+        let player_id = {
+            let players_to_peers = state.players_to_peers.read().unwrap();
+            players_to_peers
+                .iter()
+                .find(|(_, p)| **p == peer_id)
+                .map(|(player_id, _)| player_id.clone())
+        };
+
+        let player_id = match player_id {
+            Some(id) => id,
+            None => {
+                error!("No player id found for peer, somehow");
+                return;
+            }
+        };
+
+        let lobby_id = {
+            let players_in_lobbies = state.players_in_lobbies.read().unwrap();
+            players_in_lobbies.get(&player_id).cloned()
+        };
 
         let lobby_id = match lobby_id {
             Some(id) => id,
             None => {
-                error!("No lobby id in path, somehow");
+                error!("No lobby id found for peer, somehow");
                 return;
             }
         };
@@ -44,42 +56,52 @@ impl SignalingTopology<NoCallbacks, ServerState> for MatchmakingDemoTopology {
         state.add_peer(peer);
 
         let players = {
-            let lobby_manager = state.lobby_manager.lock().unwrap();
+            let lobby_manager = state.lobby_manager.read().unwrap();
             lobby_manager.get_lobby(&lobby_id).map(|l| l.players)
         };
 
         if let Some(players) = players {
             let event = Message::Text(JsonPeerEvent::NewPeer(peer_id).to_string());
             for player_id_str in players {
-                if let Ok(player_peer_id) = player_id_str.parse() {
-                    if player_peer_id != peer_id {
-                        if let Err(e) = state.try_send(player_peer_id, event.clone()) {
-                            error!("error sending to {player_peer_id:?}: {e:?}");
+                if player_id_str != player_id {
+                    let players_to_peers = state.players_to_peers.read().unwrap();
+                    if let Some(peer_id) = players_to_peers.get(&player_id_str) {
+                        if let Err(e) = state.try_send(*peer_id, event.clone()) {
+                            error!("error sending to {peer_id:?}: {e:?}");
                         }
                     }
                 }
             }
         }
 
-        while let Some(request) = receiver.next().await {
+        while let Some(_request) = receiver.next().await {
             // Handle requests as before, but scoped to the lobby
         }
 
         info!("Removing peer: {:?}", peer_id);
         state.remove_peer(&peer_id);
+        {
+            let mut players_in_lobbies = state.players_in_lobbies.write().unwrap();
+            players_in_lobbies.remove(&player_id);
+        }
+        {
+            let mut players_to_peers = state.players_to_peers.write().unwrap();
+            players_to_peers.remove(&player_id);
+        }
 
         let players = {
-            let lobby_manager = state.lobby_manager.lock().unwrap();
+            let lobby_manager = state.lobby_manager.read().unwrap();
             lobby_manager.get_lobby(&lobby_id).map(|l| l.players)
         };
 
         if let Some(players) = players {
             let event = Message::Text(JsonPeerEvent::PeerLeft(peer_id).to_string());
             for player_id_str in players {
-                if let Ok(player_peer_id) = player_id_str.parse() {
-                    if player_peer_id != peer_id {
-                        if let Err(e) = state.try_send(player_peer_id, event.clone()) {
-                            error!("error sending to {player_peer_id:?}: {e:?}");
+                if player_id_str != player_id {
+                    let players_to_peers = state.players_to_peers.read().unwrap();
+                    if let Some(peer_id) = players_to_peers.get(&player_id_str) {
+                        if let Err(e) = state.try_send(*peer_id, event.clone()) {
+                            error!("error sending to {peer_id:?}: {e:?}");
                         }
                     }
                 }

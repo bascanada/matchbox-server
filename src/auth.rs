@@ -1,9 +1,7 @@
 use axum::{
     async_trait,
-    extract::{FromRequestParts, TypedHeader},
-    headers::{authorization::Bearer, Authorization},
-    http::request::Parts,
-    http::StatusCode,
+    extract::FromRequestParts,
+    http::{header, request::Parts, StatusCode},
     response::{IntoResponse, Response},
     Json,
 };
@@ -15,15 +13,14 @@ use serde_json::json;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use tracing::warn;
 
-pub const JWT_SECRET: &[u8] = b"secret"; // In a real app, this should be a secure, configurable secret
+pub const JWT_SECRET: &[u8] = b"secret";
 pub const CHALLENGE_EXPIRATION: Duration = Duration::from_secs(60);
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Claims {
-    pub sub: String, // Subject (public key)
-    pub exp: usize,  // Expiration time
+    pub sub: String,
+    pub exp: usize,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -60,11 +57,6 @@ impl ChallengeManager {
         }
         false
     }
-
-    pub fn cleanup_expired_challenges(&self) {
-        let mut challenges = self.challenges.lock().unwrap();
-        challenges.retain(|_, timestamp| timestamp.elapsed() < CHALLENGE_EXPIRATION);
-    }
 }
 
 pub fn verify_signature(
@@ -75,8 +67,16 @@ pub fn verify_signature(
     let public_key_bytes = general_purpose::STANDARD.decode(public_key_b64)?;
     let signature_bytes = general_purpose::STANDARD.decode(signature_b64)?;
 
-    let public_key = VerifyingKey::from_bytes(&public_key_bytes)?;
-    let signature = Signature::from_bytes(&signature_bytes)?;
+    let public_key = VerifyingKey::from_bytes(
+        &public_key_bytes
+            .try_into()
+            .map_err(|_| anyhow::anyhow!("Invalid public key length"))?,
+    )?;
+    let signature = Signature::from_bytes(
+        &signature_bytes
+            .try_into()
+            .map_err(|_| anyhow::anyhow!("Invalid signature length"))?,
+    );
 
     Ok(public_key
         .verify_strict(message.as_bytes(), &signature)
@@ -109,15 +109,18 @@ where
     type Rejection = AuthError;
 
     async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
-        // Extract the token from the authorization header
-        let TypedHeader(Authorization(bearer)) =
-            TypedHeader::<Authorization<Bearer>>::from_request_parts(parts, _state)
-                .await
-                .map_err(|_| AuthError::InvalidToken)?;
+        let auth_header = parts
+            .headers
+            .get(header::AUTHORIZATION)
+            .and_then(|value| value.to_str().ok())
+            .ok_or(AuthError::InvalidToken)?;
 
-        // Decode the user data
+        let bearer_token = auth_header
+            .strip_prefix("Bearer ")
+            .ok_or(AuthError::InvalidToken)?;
+
         let token_data = decode::<Claims>(
-            bearer.token(),
+            bearer_token,
             &DecodingKey::from_secret(JWT_SECRET),
             &Validation::default(),
         )

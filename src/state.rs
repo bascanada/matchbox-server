@@ -1,12 +1,15 @@
-use crate::auth::ChallengeManager;
-use crate::lobby::{Lobby, LobbyStatus, PlayerId};
+use crate::{auth::ChallengeManager, lobby::Lobby};
 use axum::{extract::ws::Message, Error};
 use matchbox_protocol::PeerId;
 use matchbox_signaling::{
     common_logic::{self, StateObj},
     SignalingError, SignalingState,
 };
-use std::collections::HashMap;
+use std::{
+    collections::HashMap,
+    net::SocketAddr,
+    sync::{Arc, RwLock},
+};
 use tokio::sync::mpsc::UnboundedSender;
 use uuid::Uuid;
 
@@ -30,7 +33,7 @@ impl LobbyManager {
         let lobby = Lobby {
             id: Uuid::new_v4(),
             players: Default::default(),
-            status: LobbyStatus::Waiting,
+            status: crate::lobby::LobbyStatus::Waiting,
             is_private,
         };
         self.lobbies.insert(lobby.id, lobby.clone());
@@ -44,7 +47,7 @@ impl LobbyManager {
     pub fn get_public_lobbies(&self) -> Vec<Lobby> {
         self.lobbies
             .values()
-            .filter(|lobby| !lobby.is_private && lobby.status == LobbyStatus::Waiting)
+            .filter(|lobby| !lobby.is_private && lobby.status == crate::lobby::LobbyStatus::Waiting)
             .cloned()
             .collect()
     }
@@ -52,17 +55,17 @@ impl LobbyManager {
     pub fn add_player_to_lobby(
         &mut self,
         lobby_id: &Uuid,
-        player_id: PlayerId,
+        player_id: String,
     ) -> Result<(), SignalingError> {
         if let Some(lobby) = self.lobbies.get_mut(lobby_id) {
             lobby.players.insert(player_id);
             Ok(())
         } else {
-            Err(SignalingError::UnknownPeer) // Using UnknownPeer for now, maybe a better error later
+            Err(SignalingError::UnknownPeer)
         }
     }
 
-    pub fn remove_player_from_lobby(&mut self, lobby_id: &Uuid, player_id: &PlayerId) {
+    pub fn remove_player_from_lobby(&mut self, lobby_id: &Uuid, player_id: &String) {
         if let Some(lobby) = self.lobbies.get_mut(lobby_id) {
             lobby.players.remove(player_id);
         }
@@ -71,10 +74,12 @@ impl LobbyManager {
 
 #[derive(Default, Debug, Clone)]
 pub(crate) struct ServerState {
-    pub lobby_manager: StateObj<LobbyManager>,
+    pub lobby_manager: Arc<RwLock<LobbyManager>>,
     pub peers: StateObj<HashMap<PeerId, Peer>>,
-    pub players_in_lobbies: StateObj<HashMap<PlayerId, Uuid>>,
-    pub challenge_manager: StateObj<ChallengeManager>,
+    pub players_in_lobbies: Arc<RwLock<HashMap<String, Uuid>>>,
+    pub challenge_manager: ChallengeManager,
+    pub players_to_peers: Arc<RwLock<HashMap<String, PeerId>>>,
+    pub waiting_players: Arc<RwLock<HashMap<SocketAddr, String>>>,
 }
 
 impl SignalingState for ServerState {}
@@ -92,7 +97,6 @@ impl ServerState {
         self.peers.lock().unwrap().get(peer_id).cloned()
     }
 
-    /// Send a message to a peer without blocking.
     pub fn try_send(&self, id: PeerId, message: Message) -> Result<(), SignalingError> {
         let clients = self.peers.lock().unwrap();
         match clients.get(&id) {
