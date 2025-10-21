@@ -1,6 +1,6 @@
 use axum::{
     async_trait,
-    extract::FromRequestParts,
+    extract::{FromRequestParts, FromRef, State},
     http::{header, request::Parts, StatusCode},
     response::{IntoResponse, Response},
     Json,
@@ -14,7 +14,9 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-pub const JWT_SECRET: &[u8] = b"secret";
+#[derive(Clone)]
+pub struct AuthSecret(pub String);
+
 pub const CHALLENGE_EXPIRATION: Duration = Duration::from_secs(60);
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -83,7 +85,10 @@ pub fn verify_signature(
         .is_ok())
 }
 
-pub fn issue_jwt(public_key_b64: String) -> Result<String, jsonwebtoken::errors::Error> {
+pub fn issue_jwt(
+    public_key_b64: String,
+    secret: &AuthSecret,
+) -> Result<String, jsonwebtoken::errors::Error> {
     let expiration = chrono::Utc::now()
         .checked_add_signed(chrono::Duration::hours(24))
         .expect("valid timestamp")
@@ -97,18 +102,20 @@ pub fn issue_jwt(public_key_b64: String) -> Result<String, jsonwebtoken::errors:
     encode(
         &Header::default(),
         &claims,
-        &EncodingKey::from_secret(JWT_SECRET),
+        &EncodingKey::from_secret(secret.0.as_ref()),
     )
 }
 
 #[async_trait]
 impl<S> FromRequestParts<S> for Claims
 where
+    AuthSecret: FromRef<S>,
     S: Send + Sync,
 {
     type Rejection = AuthError;
 
-    async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
+    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
+        let secret = AuthSecret::from_ref(state);
         let auth_header = parts
             .headers
             .get(header::AUTHORIZATION)
@@ -121,7 +128,7 @@ where
 
         let token_data = decode::<Claims>(
             bearer_token,
-            &DecodingKey::from_secret(JWT_SECRET),
+            &DecodingKey::from_secret(secret.0.as_ref()),
             &Validation::default(),
         )
         .map_err(|_| AuthError::InvalidToken)?;

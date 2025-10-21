@@ -5,11 +5,12 @@ pub mod state;
 pub mod topology;
 
 use crate::{
+    auth::AuthSecret,
     state::ServerState,
     topology::MatchmakingDemoTopology,
 };
 use axum::{
-    extract::{Path, State},
+    extract::{FromRef, Path, State},
     http::StatusCode,
     response::{IntoResponse, Json},
     routing::{get, post},
@@ -38,13 +39,33 @@ pub fn setup_logging() {
         .init();
 }
 
+#[derive(Clone)]
+pub struct AppState {
+    pub state: ServerState,
+    pub secret: AuthSecret,
+}
+
+impl FromRef<AppState> for AuthSecret {
+    fn from_ref(input: &AppState) -> Self {
+        input.secret.clone()
+    }
+}
+
 pub async fn run(addr: SocketAddr) -> Result<(), Box<dyn std::error::Error>> {
+    dotenvy::dotenv().ok();
+    let secret =
+        std::env::var("JWT_SECRET").unwrap_or_else(|_| "secret".to_string());
     let state = ServerState::default();
-    let app_router = app(state.clone());
+    let app_state = AppState {
+        state: state.clone(),
+        secret: AuthSecret(secret.clone()),
+    };
+    let app_router = app(app_state);
 
     let server = SignalingServerBuilder::new(addr, MatchmakingDemoTopology, state.clone())
         .on_connection_request({
             let state = state.clone();
+            let secret = AuthSecret(secret);
             move |connection| {
                 let token = connection
                     .query_params
@@ -54,7 +75,7 @@ pub async fn run(addr: SocketAddr) -> Result<(), Box<dyn std::error::Error>> {
 
                 let claims = decode::<auth::Claims>(
                     &token,
-                    &DecodingKey::from_secret(auth::JWT_SECRET),
+                    &DecodingKey::from_secret(secret.0.as_ref()),
                     &Validation::default(),
                 )
                 .map_err(|_| (StatusCode::UNAUTHORIZED, "Invalid token").into_response())?
@@ -86,7 +107,7 @@ pub async fn run(addr: SocketAddr) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn app(state: ServerState) -> Router {
+fn app(state: AppState) -> Router {
     Router::new()
         .route("/health", get(health_handler))
         .route("/auth/challenge", post(challenge_handler))
@@ -108,8 +129,8 @@ struct ChallengeResponse {
     challenge: String,
 }
 
-async fn challenge_handler(State(state): State<ServerState>) -> Json<ChallengeResponse> {
-    let challenge = state.challenge_manager.generate_challenge();
+async fn challenge_handler(State(state): State<AppState>) -> Json<ChallengeResponse> {
+    let challenge = state.state.challenge_manager.generate_challenge();
     Json(ChallengeResponse { challenge })
 }
 
@@ -121,10 +142,11 @@ pub struct LoginRequest {
 }
 
 async fn login_handler(
-    State(state): State<ServerState>,
+    State(state): State<AppState>,
     Json(payload): Json<LoginRequest>,
 ) -> impl IntoResponse {
     if !state
+        .state
         .challenge_manager
         .verify_challenge(&payload.challenge)
     {
@@ -134,14 +156,14 @@ async fn login_handler(
     let signature_valid =
         match auth::verify_signature(&payload.public_key_b64, &payload.challenge, &payload.signature_b64) {
             Ok(valid) => valid,
-            Err(_) => false,
+            Err(_) => return Err((StatusCode::UNAUTHORIZED, "Invalid signature")),
         };
 
     if !signature_valid {
         return Err((StatusCode::UNAUTHORIZED, "Invalid signature"));
     }
 
-    match auth::issue_jwt(payload.public_key_b64) {
+    match auth::issue_jwt(payload.public_key_b64, &state.secret) {
         Ok(token) => Ok(Json(json!({ "token": token }))),
         Err(_) => Err((
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -156,30 +178,30 @@ pub struct CreateLobbyRequest {
 }
 
 async fn create_lobby_handler(
-    State(state): State<ServerState>,
+    State(state): State<AppState>,
     claims: auth::Claims,
     Json(payload): Json<CreateLobbyRequest>,
 ) -> impl IntoResponse {
-    let mut lobby_manager = state.lobby_manager.write().unwrap();
+    let mut lobby_manager = state.state.lobby_manager.write().unwrap();
     let mut lobby = lobby_manager.create_lobby(payload.is_private);
-    let mut players_in_lobbies = state.players_in_lobbies.write().unwrap();
+    let mut players_in_lobbies = state.state.players_in_lobbies.write().unwrap();
     players_in_lobbies.insert(claims.sub.clone(), lobby.id);
     lobby.players.insert(claims.sub);
     Json(lobby)
 }
 
-async fn list_lobbies_handler(State(state): State<ServerState>) -> impl IntoResponse {
-    let lobby_manager = state.lobby_manager.read().unwrap();
+async fn list_lobbies_handler(State(state): State<AppState>) -> impl IntoResponse {
+    let lobby_manager = state.state.lobby_manager.read().unwrap();
     let lobbies = lobby_manager.get_public_lobbies();
     Json(lobbies)
 }
 
 async fn join_lobby_handler(
-    State(state): State<ServerState>,
+    State(state): State<AppState>,
     Path(lobby_id): Path<uuid::Uuid>,
     claims: auth::Claims,
 ) -> impl IntoResponse {
-    let mut lobby_manager = state.lobby_manager.write().unwrap();
+    let mut lobby_manager = state.state.lobby_manager.write().unwrap();
     if lobby_manager
         .add_player_to_lobby(&lobby_id, claims.sub)
         .is_ok()

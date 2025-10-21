@@ -1,4 +1,5 @@
-use crate::{auth::ChallengeManager, lobby::Lobby};
+use crate::auth::ChallengeManager;
+use crate::lobby::Lobby;
 use axum::{extract::ws::Message, Error};
 use matchbox_protocol::PeerId;
 use matchbox_signaling::{
@@ -14,7 +15,7 @@ use tokio::sync::mpsc::UnboundedSender;
 use uuid::Uuid;
 
 #[derive(Debug, Clone)]
-pub(crate) struct Peer {
+pub struct Peer {
     pub id: PeerId,
     pub sender: UnboundedSender<Result<Message, Error>>,
 }
@@ -73,7 +74,7 @@ impl LobbyManager {
 }
 
 #[derive(Default, Debug, Clone)]
-pub(crate) struct ServerState {
+pub struct ServerState {
     pub lobby_manager: Arc<RwLock<LobbyManager>>,
     pub peers: StateObj<HashMap<PeerId, Peer>>,
     pub players_in_lobbies: Arc<RwLock<HashMap<String, Uuid>>>,

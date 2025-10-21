@@ -5,6 +5,7 @@ use base64::{engine::general_purpose, Engine as _};
 use clap::Parser;
 use ed25519_dalek::{Signer, SigningKey};
 use serde_json::json;
+use sha2::{Digest, Sha256};
 use std::convert::TryInto;
 
 #[derive(Parser, Debug)]
@@ -21,10 +22,16 @@ struct Args {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
 
-    let mut salt_bytes = [0u8; 16];
-    let username_bytes = args.username.as_bytes();
-    let len = std::cmp::min(username_bytes.len(), 16);
-    salt_bytes[..len].copy_from_slice(&username_bytes[..len]);
+    // Create a SHA-256 hasher
+    let mut hasher = Sha256::new();
+    // Write the full username to it
+    hasher.update(args.username.as_bytes());
+    // Get the resulting hash
+    let username_hash = hasher.finalize();
+
+    // Take the first 16 bytes of the hash as the salt
+    let salt_bytes: [u8; 16] = username_hash[..16].try_into().unwrap();
+
     let salt = SaltString::encode_b64(&salt_bytes)
         .map_err(|e| anyhow::anyhow!("Failed to encode salt: {}", e))?;
     let argon2 = Argon2::default();
