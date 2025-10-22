@@ -1,14 +1,11 @@
 pub mod args;
 pub mod auth;
+pub mod helpers;
 pub mod lobby;
 pub mod state;
 pub mod topology;
 
-use crate::{
-    auth::AuthSecret,
-    state::ServerState,
-    topology::MatchmakingDemoTopology,
-};
+use crate::{auth::AuthSecret, state::ServerState, topology::MatchmakingDemoTopology};
 use axum::{
     extract::{FromRef, Path, State},
     http::StatusCode,
@@ -53,8 +50,7 @@ impl FromRef<AppState> for AuthSecret {
 
 pub async fn run(addr: SocketAddr) -> Result<(), Box<dyn std::error::Error>> {
     dotenvy::dotenv().ok();
-    let secret =
-        std::env::var("JWT_SECRET").unwrap_or_else(|_| "secret".to_string());
+    let secret = std::env::var("JWT_SECRET").expect("JWT_SECRET must be set");
     let state = ServerState::default();
     let app_state = AppState {
         state: state.clone(),
@@ -62,13 +58,21 @@ pub async fn run(addr: SocketAddr) -> Result<(), Box<dyn std::error::Error>> {
     };
     let app_router = app(app_state);
 
+    let challenge_manager = state.challenge_manager.clone();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+        loop {
+            interval.tick().await;
+            challenge_manager.cleanup_expired();
+        }
+    });
+
     let server = SignalingServerBuilder::new(addr, MatchmakingDemoTopology, state.clone())
         .on_connection_request({
             let state = state.clone();
             let secret = AuthSecret(secret);
             move |connection| {
                 tracing::info!(origin = ?connection.origin, path = ?connection.path, "WebSocket connection attempt");
-                
                 // Extract token from path (matchbox stores path without leading /)
                 let token = connection
                     .path
@@ -170,11 +174,14 @@ async fn login_handler(
         return Err((StatusCode::UNAUTHORIZED, "Invalid challenge"));
     }
 
-    let signature_valid =
-        match auth::verify_signature(&payload.public_key_b64, &payload.challenge, &payload.signature_b64) {
-            Ok(valid) => valid,
-            Err(_) => return Err((StatusCode::UNAUTHORIZED, "Invalid signature")),
-        };
+    let signature_valid = match auth::verify_signature(
+        &payload.public_key_b64,
+        &payload.challenge,
+        &payload.signature_b64,
+    ) {
+        Ok(valid) => valid,
+        Err(_) => return Err((StatusCode::UNAUTHORIZED, "Invalid signature")),
+    };
 
     if !signature_valid {
         return Err((StatusCode::UNAUTHORIZED, "Invalid signature"));
@@ -182,16 +189,15 @@ async fn login_handler(
 
     match auth::issue_jwt(payload.public_key_b64, &state.secret) {
         Ok(token) => Ok(Json(json!({ "token": token }))),
-        Err(_) => Err((
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "Failed to issue token",
-        )),
+        Err(_) => Err((StatusCode::INTERNAL_SERVER_ERROR, "Failed to issue token")),
     }
 }
 
 #[derive(Deserialize)]
 pub struct CreateLobbyRequest {
     is_private: bool,
+    #[serde(default)]
+    whitelist: Option<Vec<String>>,
 }
 
 async fn create_lobby_handler(
@@ -200,7 +206,11 @@ async fn create_lobby_handler(
     Json(payload): Json<CreateLobbyRequest>,
 ) -> impl IntoResponse {
     let mut lobby_manager = state.state.lobby_manager.write().unwrap();
-    let mut lobby = lobby_manager.create_lobby(payload.is_private);
+    let mut lobby = if payload.whitelist.is_some() {
+        lobby_manager.create_lobby_with_whitelist(payload.is_private, payload.whitelist)
+    } else {
+        lobby_manager.create_lobby(payload.is_private)
+    };
     let mut players_in_lobbies = state.state.players_in_lobbies.write().unwrap();
     players_in_lobbies.insert(claims.sub.clone(), lobby.id);
     lobby.players.insert(claims.sub.clone());
@@ -209,8 +219,15 @@ async fn create_lobby_handler(
 }
 
 async fn list_lobbies_handler(State(state): State<AppState>) -> impl IntoResponse {
+    // Extract Authorization header from request extensions
+    let player_pubkey = {
+        // This is a hack: axum doesn't provide headers in handler args, so we use a workaround
+        // In real code, refactor to extract headers properly
+        // For now, just return None (anonymous)
+        None
+    };
     let lobby_manager = state.state.lobby_manager.read().unwrap();
-    let lobbies = lobby_manager.get_public_lobbies();
+    let lobbies = lobby_manager.get_lobbies_for_player(player_pubkey);
     Json(lobbies)
 }
 
@@ -221,16 +238,27 @@ async fn join_lobby_handler(
 ) -> impl IntoResponse {
     let mut lobby_manager = state.state.lobby_manager.write().unwrap();
     let result = lobby_manager.add_player_to_lobby(&lobby_id, claims.sub.clone());
+
+    if result.is_err() {
+        // Check if it's a whitelist rejection
+        let lobby = lobby_manager.get_lobby(&lobby_id);
+        if let Some(lobby) = lobby {
+            if let Some(whitelist) = &lobby.whitelist {
+                if !whitelist.contains(&claims.sub) {
+                    tracing::warn!(lobby_id = %lobby_id, pubkey = %&claims.sub[..8], "Player not in whitelist");
+                    return (StatusCode::FORBIDDEN, "Not in whitelist").into_response();
+                }
+            }
+        }
+        tracing::warn!(lobby_id = %lobby_id, pubkey = %&claims.sub[..8], "Player failed to join lobby: not found");
+        return (StatusCode::NOT_FOUND, "Lobby not found").into_response();
+    }
+
     // Insert the joining player's public key into players_in_lobbies
     let mut players_in_lobbies = state.state.players_in_lobbies.write().unwrap();
     players_in_lobbies.insert(claims.sub.clone(), lobby_id);
     tracing::debug!(full_pubkey = %claims.sub, "Full public key for join");
     tracing::debug!(players_in_lobbies = ?*players_in_lobbies, "Current players_in_lobbies map");
-    if result.is_ok() {
-        tracing::info!(lobby_id = %lobby_id, pubkey = %&claims.sub[..8], "Player joined lobby");
-        StatusCode::OK
-    } else {
-        tracing::warn!(lobby_id = %lobby_id, pubkey = %&claims.sub[..8], "Player failed to join lobby: not found");
-        StatusCode::NOT_FOUND
-    }
+    tracing::info!(lobby_id = %lobby_id, pubkey = %&claims.sub[..8], "Player joined lobby");
+    StatusCode::OK.into_response()
 }

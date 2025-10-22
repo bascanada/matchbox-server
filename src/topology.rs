@@ -2,7 +2,7 @@ use crate::state::{Peer, ServerState};
 use async_trait::async_trait;
 use axum::extract::ws::Message;
 use futures::StreamExt;
-use matchbox_protocol::{JsonPeerEvent, PeerId, PeerRequest};
+use matchbox_protocol::{JsonPeerEvent, PeerRequest};
 use matchbox_signaling::{
     common_logic::parse_request, ClientRequestError, NoCallbacks, SignalingTopology, WsStateMeta,
 };

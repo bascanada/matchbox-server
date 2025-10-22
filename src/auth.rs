@@ -1,6 +1,6 @@
 use axum::{
     async_trait,
-    extract::{FromRequestParts, FromRef, State},
+    extract::{FromRef, FromRequestParts},
     http::{header, request::Parts, StatusCode},
     response::{IntoResponse, Response},
     Json,
@@ -31,6 +31,12 @@ pub struct ChallengeManager {
 }
 
 impl ChallengeManager {
+    /// Remove expired challenges from the map
+    pub fn cleanup_expired(&self) {
+        let mut challenges = self.challenges.lock().unwrap();
+        let now = Instant::now();
+        challenges.retain(|_, &mut timestamp| now.duration_since(timestamp) < CHALLENGE_EXPIRATION);
+    }
     pub fn new() -> Self {
         Default::default()
     }

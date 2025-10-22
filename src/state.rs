@@ -1,3 +1,27 @@
+impl ServerState {
+    /// Remove a player from all server state (peers, players_in_lobbies, players_to_peers, and all lobbies)
+    pub fn remove_player(&self, player_id: &str) {
+        // Remove from peers (by PeerId)
+        if let Some(peer_id) = self.players_to_peers.write().unwrap().remove(player_id) {
+            self.peers.lock().unwrap().remove(&peer_id);
+        }
+        // Remove from players_in_lobbies
+        let lobby_id_opt = self.players_in_lobbies.write().unwrap().remove(player_id);
+        // Remove from all lobbies
+        if let Some(lobby_id) = lobby_id_opt {
+            if let Ok(mut lobby_manager) = self.lobby_manager.try_write() {
+                lobby_manager.remove_player_from_lobby(&lobby_id, &player_id.to_string());
+            }
+        } else {
+            // Remove from any lobby where present
+            if let Ok(mut lobby_manager) = self.lobby_manager.try_write() {
+                for lobby in lobby_manager.lobbies.values_mut() {
+                    lobby.players.remove(player_id);
+                }
+            }
+        }
+    }
+}
 use crate::auth::ChallengeManager;
 use crate::lobby::Lobby;
 use axum::{extract::ws::Message, Error};
@@ -36,6 +60,23 @@ impl LobbyManager {
             players: Default::default(),
             status: crate::lobby::LobbyStatus::Waiting,
             is_private,
+            whitelist: None,
+        };
+        self.lobbies.insert(lobby.id, lobby.clone());
+        lobby
+    }
+
+    pub fn create_lobby_with_whitelist(
+        &mut self,
+        is_private: bool,
+        whitelist: Option<Vec<String>>,
+    ) -> Lobby {
+        let lobby = Lobby {
+            id: Uuid::new_v4(),
+            players: Default::default(),
+            status: crate::lobby::LobbyStatus::Waiting,
+            is_private,
+            whitelist: whitelist.map(|w| w.into_iter().collect()),
         };
         self.lobbies.insert(lobby.id, lobby.clone());
         lobby
@@ -45,10 +86,26 @@ impl LobbyManager {
         self.lobbies.get(id).cloned()
     }
 
-    pub fn get_public_lobbies(&self) -> Vec<Lobby> {
+    pub fn get_lobbies_for_player(&self, player_pubkey: Option<String>) -> Vec<Lobby> {
         self.lobbies
             .values()
-            .filter(|lobby| !lobby.is_private && lobby.status == crate::lobby::LobbyStatus::Waiting)
+            .filter(|lobby| {
+                // If lobby is public, always show
+                if !lobby.is_private && lobby.status == crate::lobby::LobbyStatus::Waiting {
+                    return true;
+                }
+                // If lobby is private and has a whitelist, only show if player is whitelisted
+                if lobby.is_private {
+                    if let Some(whitelist) = &lobby.whitelist {
+                        if let Some(ref pk) = player_pubkey {
+                            return whitelist.contains(pk);
+                        } else {
+                            return false;
+                        }
+                    }
+                }
+                false
+            })
             .cloned()
             .collect()
     }
@@ -59,6 +116,12 @@ impl LobbyManager {
         player_id: String,
     ) -> Result<(), SignalingError> {
         if let Some(lobby) = self.lobbies.get_mut(lobby_id) {
+            // Check whitelist if it exists
+            if let Some(whitelist) = &lobby.whitelist {
+                if !whitelist.contains(&player_id) {
+                    return Err(SignalingError::UnknownPeer); // Using UnknownPeer to indicate "not allowed"
+                }
+            }
             lobby.players.insert(player_id);
             Ok(())
         } else {

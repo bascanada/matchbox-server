@@ -21,4 +21,6 @@ pub struct Lobby {
     pub players: HashSet<PlayerId>,
     pub status: LobbyStatus,
     pub is_private: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub whitelist: Option<HashSet<PlayerId>>,
 }

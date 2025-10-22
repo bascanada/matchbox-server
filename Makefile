@@ -42,7 +42,7 @@ format:
 
 test:
 	@echo "Running tests with profile"
-	cargo test
+	JWT_SECRET=secret cargo test
 
 
 # Env
@@ -50,7 +50,7 @@ test:
 
 # Dev run
 run:
-	APP_VERSION=$(VERSION) cargo run
+	APP_VERSION=$(VERSION) JWT_SECRET=secret cargo run
 
 build_docker_matchbox_server:
 	docker build -f ./Dockerfile ./ -t ghcr.io/bascanada/matchbox_server:latest
