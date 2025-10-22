@@ -36,7 +36,8 @@
 		"publint": "^0.3.13",
 		"svelte": "^5.39.5",
 		"typescript": "^5.9.2",
-		"vite": "^7.1.7"
+		"vite": "^7.1.7",
+		"vite-plugin-wasm": "^3.5.0"
 	},
 	"keywords": [
 		"svelte"

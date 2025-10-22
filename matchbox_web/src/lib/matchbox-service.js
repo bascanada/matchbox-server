@@ -1,6 +1,5 @@
 import { writable } from 'svelte/store';
 import * as bip39 from 'bip39';
-import argon2 from 'argon2-browser';
 import * as ed from 'noble-ed25519';
 import { ethers } from 'ethers';
 
@@ -54,6 +53,7 @@ const getSalt = async (username) => {
  */
 export async function getPrivateKey(username, secret) {
     const salt = await getSalt(username);
+    console.log("Using salt:", argon2);
     const hash = await argon2.hash({
         pass: secret,
         salt: salt,
@@ -61,11 +61,15 @@ export async function getPrivateKey(username, secret) {
         mem: 16 * 1024,
         hashLen: 32,
         parallelism: 1,
-        type: argon2.ArgonType.Argon2id,
     });
     // Return the raw hash which will be our private key
     return hash.hash;
 };
+
+// Helper function for bytes to hex
+function bytesToHex(bytes) {
+  return Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
+}
 
 
 // --- Service Methods ---
@@ -78,7 +82,7 @@ export async function getPrivateKey(username, secret) {
 export async function createAccount(username, secret) {
     const privateKey = await getPrivateKey(username, secret);
     const publicKey = await ed.getPublicKey(privateKey);
-    const publicKeyHex = ed.utils.bytesToHex(publicKey);
+    const publicKeyHex = bytesToHex(publicKey);
 
     const response = await fetch(`${apiBaseUrlValue}/api/register`, {
         method: 'POST',
@@ -103,7 +107,7 @@ export async function createAccount(username, secret) {
 export async function loginWithSecret(username, secret) {
     const privateKey = await getPrivateKey(username, secret);
     const publicKey = await ed.getPublicKey(privateKey);
-    const publicKeyHex = ed.utils.bytesToHex(publicKey);
+    const publicKeyHex = bytesToHex(publicKey);
 
     // 1. Get challenge
     const challengeResponse = await fetch(`${apiBaseUrlValue}/api/challenge/${publicKeyHex}`);
@@ -115,7 +119,7 @@ export async function loginWithSecret(username, secret) {
 
     // 2. Sign challenge
     const signature = await ed.sign(challenge, privateKey);
-    const signatureHex = ed.utils.bytesToHex(signature);
+    const signatureHex = bytesToHex(signature);
 
     // 3. Request JWT
     const loginResponse = await fetch(`${apiBaseUrlValue}/api/login`, {
@@ -216,3 +220,22 @@ export function logout() {
 export function setApiUrl(newUrl) {
     API_BASE_URL.set(newUrl);
 }
+
+// Use dynamic import for argon2-browser and fallback to global/window if needed
+let argon2;
+(async () => {
+  try {
+    const argon2Module = await import('argon2-browser');
+    argon2 = argon2Module.ArgonType ? argon2Module : (typeof window !== 'undefined' ? window.argon2 : undefined);
+    if (!argon2) {
+      throw new Error('argon2-browser module not found.');
+    }
+  } catch (e) {
+    if (typeof window !== 'undefined') {
+      argon2 = window.argon2;
+    }
+    if (!argon2) {
+      console.error('argon2-browser could not be loaded:', e);
+    }
+  }
+})();
