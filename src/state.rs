@@ -1,159 +1,168 @@
+impl ServerState {
+    /// Remove a player from all server state (peers, players_in_lobbies, players_to_peers, and all lobbies)
+    pub fn remove_player(&self, player_id: &str) {
+        // Remove from peers (by PeerId)
+        if let Some(peer_id) = self.players_to_peers.write().unwrap().remove(player_id) {
+            self.peers.lock().unwrap().remove(&peer_id);
+        }
+        // Remove from players_in_lobbies
+        let lobby_id_opt = self.players_in_lobbies.write().unwrap().remove(player_id);
+        // Remove from all lobbies
+        if let Some(lobby_id) = lobby_id_opt {
+            if let Ok(mut lobby_manager) = self.lobby_manager.try_write() {
+                lobby_manager.remove_player_from_lobby(&lobby_id, &player_id.to_string());
+            }
+        } else {
+            // Remove from any lobby where present
+            if let Ok(mut lobby_manager) = self.lobby_manager.try_write() {
+                for lobby in lobby_manager.lobbies.values_mut() {
+                    lobby.players.remove(player_id);
+                }
+            }
+        }
+    }
+}
+use crate::auth::ChallengeManager;
+use crate::lobby::Lobby;
 use axum::{extract::ws::Message, Error};
 use matchbox_protocol::PeerId;
 use matchbox_signaling::{
     common_logic::{self, StateObj},
     SignalingError, SignalingState,
 };
-use serde::Deserialize;
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     net::SocketAddr,
+    sync::{Arc, RwLock},
 };
 use tokio::sync::mpsc::UnboundedSender;
-
-#[derive(Debug, Deserialize, Default, Clone, PartialEq, Eq, Hash)]
-pub(crate) struct RoomId(pub String);
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub(crate) struct RequestedRoom {
-    pub id: RoomId,
-    pub next: Option<usize>,
-}
+use uuid::Uuid;
 
 #[derive(Debug, Clone)]
-pub(crate) struct Peer {
-    pub uuid: PeerId,
-    pub room: RequestedRoom,
+pub struct Peer {
+    pub id: PeerId,
     pub sender: UnboundedSender<Result<Message, Error>>,
 }
 
 #[derive(Default, Debug, Clone)]
-pub(crate) struct ServerState {
-    clients_waiting: StateObj<HashMap<SocketAddr, RequestedRoom>>,
-    clients_in_queue: StateObj<HashMap<PeerId, RequestedRoom>>,
-    clients: StateObj<HashMap<PeerId, Peer>>,
-    rooms: StateObj<HashMap<RequestedRoom, HashSet<PeerId>>>,
-    matched_by_next: StateObj<HashSet<Vec<PeerId>>>,
+pub struct LobbyManager {
+    lobbies: HashMap<Uuid, Lobby>,
 }
+
+impl LobbyManager {
+    pub fn new() -> Self {
+        Default::default()
+    }
+
+    pub fn create_lobby(&mut self, is_private: bool) -> Lobby {
+        let lobby = Lobby {
+            id: Uuid::new_v4(),
+            players: Default::default(),
+            status: crate::lobby::LobbyStatus::Waiting,
+            is_private,
+            whitelist: None,
+        };
+        self.lobbies.insert(lobby.id, lobby.clone());
+        lobby
+    }
+
+    pub fn create_lobby_with_whitelist(
+        &mut self,
+        is_private: bool,
+        whitelist: Option<Vec<String>>,
+    ) -> Lobby {
+        let lobby = Lobby {
+            id: Uuid::new_v4(),
+            players: Default::default(),
+            status: crate::lobby::LobbyStatus::Waiting,
+            is_private,
+            whitelist: whitelist.map(|w| w.into_iter().collect()),
+        };
+        self.lobbies.insert(lobby.id, lobby.clone());
+        lobby
+    }
+
+    pub fn get_lobby(&self, id: &Uuid) -> Option<Lobby> {
+        self.lobbies.get(id).cloned()
+    }
+
+    pub fn get_lobbies_for_player(&self, player_pubkey: Option<String>) -> Vec<Lobby> {
+        self.lobbies
+            .values()
+            .filter(|lobby| {
+                // If lobby is public, always show
+                if !lobby.is_private && lobby.status == crate::lobby::LobbyStatus::Waiting {
+                    return true;
+                }
+                // If lobby is private and has a whitelist, only show if player is whitelisted
+                if lobby.is_private {
+                    if let Some(whitelist) = &lobby.whitelist {
+                        if let Some(ref pk) = player_pubkey {
+                            return whitelist.contains(pk);
+                        } else {
+                            return false;
+                        }
+                    }
+                }
+                false
+            })
+            .cloned()
+            .collect()
+    }
+
+    pub fn add_player_to_lobby(
+        &mut self,
+        lobby_id: &Uuid,
+        player_id: String,
+    ) -> Result<(), SignalingError> {
+        if let Some(lobby) = self.lobbies.get_mut(lobby_id) {
+            // Check whitelist if it exists
+            if let Some(whitelist) = &lobby.whitelist {
+                if !whitelist.contains(&player_id) {
+                    return Err(SignalingError::UnknownPeer); // Using UnknownPeer to indicate "not allowed"
+                }
+            }
+            lobby.players.insert(player_id);
+            Ok(())
+        } else {
+            Err(SignalingError::UnknownPeer)
+        }
+    }
+
+    pub fn remove_player_from_lobby(&mut self, lobby_id: &Uuid, player_id: &String) {
+        if let Some(lobby) = self.lobbies.get_mut(lobby_id) {
+            lobby.players.remove(player_id);
+        }
+    }
+}
+
+#[derive(Default, Debug, Clone)]
+pub struct ServerState {
+    pub lobby_manager: Arc<RwLock<LobbyManager>>,
+    pub peers: StateObj<HashMap<PeerId, Peer>>,
+    pub players_in_lobbies: Arc<RwLock<HashMap<String, Uuid>>>,
+    pub challenge_manager: ChallengeManager,
+    pub players_to_peers: Arc<RwLock<HashMap<String, PeerId>>>,
+    pub waiting_players: Arc<RwLock<HashMap<SocketAddr, String>>>,
+}
+
 impl SignalingState for ServerState {}
 
 impl ServerState {
-    /// Add a waiting client to matchmaking
-    pub fn add_waiting_client(&mut self, origin: SocketAddr, room: RequestedRoom) {
-        self.clients_waiting.lock().unwrap().insert(origin, room);
+    pub fn add_peer(&mut self, peer: Peer) {
+        self.peers.lock().unwrap().insert(peer.id, peer);
     }
 
-    /// Assign a peer id to a waiting client
-    pub fn assign_id_to_waiting_client(&mut self, origin: SocketAddr, peer_id: PeerId) {
-        let room = {
-            let mut lock = self.clients_waiting.lock().unwrap();
-            lock.remove(&origin).expect("waiting client")
-        };
-        {
-            let mut lock = self.clients_in_queue.lock().unwrap();
-            lock.insert(peer_id, room);
-        }
-    }
-
-    /// Remove the waiting peer, returning the peer's requested room
-    pub fn remove_waiting_peer(&mut self, peer_id: PeerId) -> RequestedRoom {
-        let room = {
-            let mut lock = self.clients_in_queue.lock().unwrap();
-            lock.remove(&peer_id).expect("waiting peer")
-        };
-        room
-    }
-
-    /// Add a peer, returning the peers already in room
-    pub fn add_peer(&mut self, peer: Peer) -> Vec<PeerId> {
-        let peer_id = peer.uuid;
-        let room = peer.room.clone();
-        {
-            let mut clients = self.clients.lock().unwrap();
-            clients.insert(peer.uuid, peer);
-        };
-        let mut rooms = self.rooms.lock().unwrap();
-        let peers = rooms.entry(room.clone()).or_default();
-        let prev_peers = peers.iter().cloned().collect();
-
-        match room.next {
-            None => {
-                peers.insert(peer_id);
-            }
-            Some(num_players) => {
-                if peers.len() == num_players - 1 {
-                    let mut matched_by_next = self.matched_by_next.lock().unwrap();
-                    let mut updated_peers = peers.clone();
-                    updated_peers.insert(peer_id);
-                    matched_by_next.insert(updated_peers.into_iter().collect());
-
-                    peers.clear(); // room is complete
-                } else {
-                    peers.insert(peer_id);
-                }
-            }
-        };
-
-        prev_peers
-    }
-
-    pub fn remove_matched_peer(&mut self, peer: PeerId) -> Vec<PeerId> {
-        let mut matched_by_next = self.matched_by_next.lock().unwrap();
-        let mut peers = vec![];
-        matched_by_next.retain(|group| {
-            if group.contains(&peer) {
-                peers = group.clone();
-                return false;
-            }
-
-            true
-        });
-
-        peers.retain(|p| p != &peer);
-
-        if !peers.is_empty() {
-            matched_by_next.insert(peers.clone());
-        }
-
-        peers
-    }
-
-    /// Get a peer
-    pub fn get_peer(&self, peer_id: &PeerId) -> Option<Peer> {
-        let clients = self.clients.lock().unwrap();
-        clients.get(peer_id).cloned()
-    }
-
-    /// Get the peers in a room currently
-    pub fn get_room_peers(&self, room: &RequestedRoom) -> Vec<PeerId> {
-        self.rooms
-            .lock()
-            .unwrap()
-            .get(room)
-            .map(|room_peers| room_peers.iter().copied().collect::<Vec<PeerId>>())
-            .unwrap_or_default()
-    }
-
-    /// Remove a peer from the state if it existed, returning the peer removed.
-    #[must_use]
     pub fn remove_peer(&mut self, peer_id: &PeerId) -> Option<Peer> {
-        let peer = { self.clients.lock().unwrap().remove(peer_id) };
-
-        if let Some(ref peer) = peer {
-            // Best effort to remove peer from their room
-            _ = self
-                .rooms
-                .lock()
-                .unwrap()
-                .get_mut(&peer.room)
-                .map(|room| room.remove(peer_id));
-        }
-        peer
+        self.peers.lock().unwrap().remove(peer_id)
     }
 
-    /// Send a message to a peer without blocking.
+    pub fn get_peer(&self, peer_id: &PeerId) -> Option<Peer> {
+        self.peers.lock().unwrap().get(peer_id).cloned()
+    }
+
     pub fn try_send(&self, id: PeerId, message: Message) -> Result<(), SignalingError> {
-        let clients = self.clients.lock().unwrap();
+        let clients = self.peers.lock().unwrap();
         match clients.get(&id) {
             Some(peer) => Ok(common_logic::try_send(&peer.sender, message)?),
             None => Err(SignalingError::UnknownPeer),
