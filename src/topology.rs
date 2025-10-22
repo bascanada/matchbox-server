@@ -24,6 +24,7 @@ impl SignalingTopology<NoCallbacks, ServerState> for MatchmakingDemoTopology {
 
         let player_id = {
             let players_to_peers = state.players_to_peers.read().unwrap();
+            tracing::debug!(peer_id = ?peer_id, players_to_peers = ?*players_to_peers, "Looking up player_id for peer_id");
             players_to_peers
                 .iter()
                 .find(|(_, p)| **p == peer_id)
@@ -31,22 +32,29 @@ impl SignalingTopology<NoCallbacks, ServerState> for MatchmakingDemoTopology {
         };
 
         let player_id = match player_id {
-            Some(id) => id,
+            Some(id) => {
+                tracing::info!(peer_id = ?peer_id, player_id = %&id[..8], "Found player_id for peer");
+                id
+            }
             None => {
-                error!("No player id found for peer, somehow");
+                error!(peer_id = ?peer_id, "No player id found for peer, somehow");
                 return;
             }
         };
 
         let lobby_id = {
             let players_in_lobbies = state.players_in_lobbies.read().unwrap();
+            tracing::debug!(player_id = %&player_id[..8], players_in_lobbies = ?*players_in_lobbies, "Looking up lobby_id for player");
             players_in_lobbies.get(&player_id).cloned()
         };
 
         let lobby_id = match lobby_id {
-            Some(id) => id,
+            Some(id) => {
+                tracing::info!(player_id = %&player_id[..8], lobby_id = %id, "Found lobby for player");
+                id
+            }
             None => {
-                error!("No lobby id found for peer, somehow");
+                error!(player_id = %&player_id[..8], "No lobby id found for peer, somehow");
                 return;
             }
         };

@@ -44,3 +44,4 @@ reqwest = { version = "0.11", features = ["json"] }
 anyhow = "1.0"
 serial_test = "2.0.0"
 thiserror = "1.0"
+futures-util = "0.3"
