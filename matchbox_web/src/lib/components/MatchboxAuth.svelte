@@ -1,3 +1,5 @@
+<svelte:options customElement="matchbox-auth" />
+
 <script>
   import {
     createAccount,
@@ -14,20 +16,24 @@
   let username = "";
   let secret = "";
   let recoveryPhrase = "";
+  let generatedRecoveryPhrase = "";
   let error = null;
   let isLoading = false;
 
   const handleSecretKeySignUp = async () => {
-    if (!username || !secret) {
-      error = "Username and Secret Key are required.";
+    if (!username) {
+      error = "Username is required.";
       return;
     }
     isLoading = true;
     error = null;
     try {
-      await createAccount(username, secret);
-      // Login is handled inside createAccount
-      view = "loggedIn";
+      const result = await createAccount(username);
+      // Store the generated credentials to show to user
+      secret = result.secretKey;
+      generatedRecoveryPhrase = result.recoveryPhrase;
+      // Show success view with credentials
+      view = "accountCreated";
     } catch (e) {
       error = e.message;
     } finally {
@@ -88,6 +94,11 @@
     username = "";
     secret = "";
     recoveryPhrase = "";
+    generatedRecoveryPhrase = "";
+  };
+
+  const handleContinueAfterSignup = () => {
+    view = "loggedIn";
   };
 
   // Reset error on input change
@@ -103,7 +114,57 @@
   {#if view === 'loggedIn'}
     <div class="welcome-view">
       <h3>Welcome, {$currentUser?.username}</h3>
+      {#if $currentUser?.publicKey}
+        <div class="pubkey-section">
+          <p class="pubkey-label">Your Public Key:</p>
+          <input
+            type="text"
+            readonly
+            class="pubkey-display"
+            value={$currentUser.publicKey}
+            on:click={(e) => e.target.select()}
+          />
+          <button class="copy-button" on:click={() => navigator.clipboard.writeText($currentUser.publicKey)}>
+            Copy Public Key
+          </button>
+        </div>
+      {/if}
       <button on:click={handleLogout}>Log Out</button>
+    </div>
+  {:else if view === 'accountCreated'}
+    <div class="credentials-view">
+      <h2>Account Created!</h2>
+      <p class="warning">⚠️ Save these credentials securely. You won't see them again!</p>
+      
+      <div class="credential-section">
+        <p class="credential-label">Secret Key (like a password)</p>
+        <input
+          type="text"
+          readonly
+          value={secret}
+          on:click={(e) => e.target.select()}
+        />
+        <button class="copy-button" on:click={() => navigator.clipboard.writeText(secret)}>
+          Copy Secret Key
+        </button>
+      </div>
+
+      <div class="credential-section">
+        <p class="credential-label">Recovery Phrase (24 words)</p>
+        <textarea
+          readonly
+          rows="4"
+          value={generatedRecoveryPhrase}
+          on:click={(e) => e.target.select()}
+        ></textarea>
+        <button class="copy-button" on:click={() => navigator.clipboard.writeText(generatedRecoveryPhrase)}>
+          Copy Recovery Phrase
+        </button>
+      </div>
+
+      <button on:click={handleContinueAfterSignup}>
+        I've Saved My Credentials - Continue
+      </button>
     </div>
   {:else if view === 'initial'}
     <div class="initial-view">
@@ -130,13 +191,17 @@
         bind:value={username}
         disabled={isLoading}
       />
-      <input
-        type="password"
-        placeholder="Secret Key (like a password)"
-        bind:value={secret}
-        disabled={isLoading}
-      />
+      {#if view === 'secretKeyLogin'}
+        <input
+          type="text"
+          placeholder="Secret Key (like a password)"
+          bind:value={secret}
+          disabled={isLoading}
+          autocomplete="off"
+        />
+      {/if}
       {#if view === 'secretKeySignUp'}
+        <p class="info-text">A secret key will be generated for you after account creation.</p>
         <button on:click={handleSecretKeySignUp} disabled={isLoading}>
           {isLoading ? "Creating..." : "Create Account"}
         </button>
@@ -234,5 +299,66 @@
   .initial-view, .form-view, .welcome-view {
     display: flex;
     flex-direction: column;
+  }
+  .credentials-view {
+    display: flex;
+    flex-direction: column;
+  }
+  .credential-section {
+    margin: 10px 0;
+  }
+  .credential-label {
+    font-weight: bold;
+    margin: 5px 0;
+    color: #333;
+  }
+  .warning {
+    background-color: #fff3cd;
+    border: 1px solid #ffc107;
+    padding: 10px;
+    border-radius: 5px;
+    color: #856404;
+    text-align: center;
+    font-weight: bold;
+  }
+  .info-text {
+    color: #666;
+    font-size: 14px;
+    text-align: center;
+    margin: 10px 0;
+  }
+  .copy-button {
+    background-color: #28a745;
+    margin-top: 5px;
+  }
+  .copy-button:hover {
+    background-color: #218838;
+  }
+  textarea {
+    width: calc(100% - 20px);
+    padding: 10px;
+    border: 1px solid #ccc;
+    border-radius: 5px;
+    font-size: 14px;
+    font-family: monospace;
+    resize: vertical;
+  }
+  .pubkey-section {
+    margin: 15px 0;
+    padding: 10px;
+    background-color: #f0f0f0;
+    border-radius: 5px;
+  }
+  .pubkey-label {
+    font-weight: bold;
+    margin: 5px 0;
+    color: #333;
+    font-size: 14px;
+  }
+  .pubkey-display {
+    font-family: monospace;
+    font-size: 12px;
+    background-color: white;
+    word-break: break-all;
   }
 </style>

@@ -16,7 +16,33 @@ env:
 
 
 jobs:
-  build_and_test:
+  detect_changes:
+    runs-on: ubuntu-latest
+    outputs:
+      rust: ${{ steps.filter.outputs.rust }}
+      web: ${{ steps.filter.outputs.web }}
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+      
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            rust:
+              - 'src/**'
+              - 'examples/**'
+              - 'tests/**'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - 'Dockerfile'
+              - 'Makefile'
+            web:
+              - 'matchbox_web/**'
+
+  build_and_test_rust:
+    needs: detect_changes
+    if: needs.detect_changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Check out
@@ -36,4 +62,31 @@ jobs:
       - name: Style Check
         run: make format
       - name: Build matchbox
-        run: make build_docker_matchbox_server 
+        run: make build_docker_matchbox_server
+
+  build_and_test_web:
+    needs: detect_changes
+    if: needs.detect_changes.outputs.web == 'true'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: matchbox_web
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+      
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: matchbox_web/package-lock.json
+      
+      - name: Install dependencies
+        run: npm ci
+      
+      - name: Build package
+        run: npm run build
+      
+      - name: Build web components
+        run: npm run build:webcomponents 

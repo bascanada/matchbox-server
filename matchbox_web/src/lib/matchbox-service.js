@@ -10,11 +10,13 @@ API_BASE_URL.subscribe(value => apiBaseUrlValue = value);
 
 
 // --- State Management ---
-import { browser } from '$app/environment';
+// Check if we're in a browser environment (compatible with all bundlers)
+const browser = typeof window !== 'undefined';
 
 export const isLoggedIn = writable(false);
 export const currentUser = writable(null);
 export const jwt = writable(browser ? localStorage.getItem('matchbox-jwt') : null);
+export const recoveryPhrase = writable(browser ? localStorage.getItem('matchbox-recovery') : null);
 
 // Automatically update login status when JWT changes
 jwt.subscribe(token => {
@@ -25,35 +27,89 @@ jwt.subscribe(token => {
     localStorage.removeItem('matchbox-jwt');
   } else {
     localStorage.setItem('matchbox-jwt', token);
-    // You might want to decode the JWT to get user info here
-    // For now, we'll set it on login
+    // Decode JWT to get user info
+    const claims = decodeJWT(token);
+    if (claims) {
+      currentUser.set({ 
+        username: claims.username, 
+        publicKey: claims.sub, 
+        isWallet: false 
+      });
+    }
+  }
+});
+
+// Store recovery phrase securely
+recoveryPhrase.subscribe(phrase => {
+  if (!browser) return;
+  if (phrase) {
+    localStorage.setItem('matchbox-recovery', phrase);
+  } else {
+    localStorage.removeItem('matchbox-recovery');
   }
 });
 
 
 // --- Helper Functions ---
 
+// Decode JWT (without verification - only for extracting claims)
+function decodeJWT(token) {
+  try {
+    const parts = token.split('.');
+    if (parts.length !== 3) return null;
+    const payload = parts[1];
+    const decoded = atob(payload.replace(/-/g, '+').replace(/_/g, '/'));
+    return JSON.parse(decoded);
+  } catch (e) {
+    console.error('Failed to decode JWT:', e);
+    return null;
+  }
+}
+
+// Helper function for bytes to hex
+function bytesToHex(bytes) {
+  return Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+// Helper function for hex to bytes
+function hexToBytes(hex) {
+  const bytes = new Uint8Array(hex.length / 2);
+  for (let i = 0; i < hex.length; i += 2) {
+    bytes[i / 2] = parseInt(hex.substr(i, 2), 16);
+  }
+  return bytes;
+}
+
+// Helper function for base64 encoding
+function base64Encode(bytes) {
+  return btoa(String.fromCharCode(...bytes));
+}
+
 /**
  * Derives a salt from a username using SHA-256.
  * @param {string} username - The username.
- * @returns {Promise<Uint8Array>} The salt.
+ * @returns {Promise<Uint8Array>} The salt (first 16 bytes of SHA-256 hash).
  */
 const getSalt = async (username) => {
     const encoder = new TextEncoder();
     const data = encoder.encode(username);
     const hashBuffer = await crypto.subtle.digest('SHA-256', data);
-    return new Uint8Array(hashBuffer);
+    const hashArray = new Uint8Array(hashBuffer);
+    return hashArray.slice(0, 16); // Use first 16 bytes as salt
 };
 
 /**
- * Derives a private key from a username and secret using Argon2.
- * @param {string} username - The username (acts as part of the salt).
+ * Derives a private key from a secret using Argon2.
+ * @param {string} username - The username (used for salt derivation).
  * @param {string} secret - The user's secret/password.
  * @returns {Promise<Uint8Array>} The 32-byte private key.
  */
 export async function getPrivateKey(username, secret) {
+    if (!argon2) {
+        throw new Error('Argon2 not initialized. Please wait for the module to load.');
+    }
+    
     const salt = await getSalt(username);
-    console.log("Using salt:", argon2);
     const hash = await argon2.hash({
         pass: secret,
         salt: salt,
@@ -61,73 +117,95 @@ export async function getPrivateKey(username, secret) {
         mem: 16 * 1024,
         hashLen: 32,
         parallelism: 1,
+        type: argon2.ArgonType?.Argon2id || 2, // Argon2id = 2
     });
-    // Return the raw hash which will be our private key
     return hash.hash;
-};
+}
 
-// Helper function for bytes to hex
-function bytesToHex(bytes) {
-  return Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
+/**
+ * Generates a random secret key (32 bytes as hex).
+ * @returns {string} A random secret key in hex format.
+ */
+function generateSecretKey() {
+    const bytes = new Uint8Array(32);
+    crypto.getRandomValues(bytes);
+    return bytesToHex(bytes);
+}
+
+/**
+ * Generates a recovery key (same as secret key, 64-char hex string).
+ * @returns {string} A random recovery key in hex format.
+ */
+function generateRecoveryKey() {
+    const bytes = new Uint8Array(32);
+    crypto.getRandomValues(bytes);
+    return bytesToHex(bytes);
 }
 
 
 // --- Service Methods ---
 
 /**
- * Creates a new account with a username and secret.
+ * Creates a new account by generating a random secret key and recovery key.
  * @param {string} username - The desired username.
- * @param {string} secret - The desired secret.
+ * @returns {Promise<{token: string, recoveryKey: string, secretKey: string}>}
  */
-export async function createAccount(username, secret) {
-    const privateKey = await getPrivateKey(username, secret);
-    const publicKey = await ed.getPublicKey(privateKey);
-    const publicKeyHex = bytesToHex(publicKey);
-
-    const response = await fetch(`${apiBaseUrlValue}/api/register`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ public_key: publicKeyHex }),
-    });
-
-    if (!response.ok) {
-        const error = await response.text();
-        throw new Error(`Failed to create account: ${error}`);
-    }
-
-    // After creating the account, automatically log in.
-    return await loginWithSecret(username, secret);
+export async function createAccount(username) {
+    // Generate a random secret key (32 bytes)
+    const secretKey = generateSecretKey();
+    
+    // Generate a recovery key (also 32 bytes, separate from secret key)
+    const recoveryKey = generateRecoveryKey();
+    
+    // Login with the generated secret
+    const token = await loginWithSecret(username, secretKey);
+    
+    // Store the recovery key
+    recoveryPhrase.set(recoveryKey);
+    
+    return {
+        token,
+        recoveryKey, // Changed from recoveryPhrase to recoveryKey
+        secretKey,
+    };
 }
 
 /**
  * Logs in a user with their username and secret.
  * @param {string} username - The user's username.
- * @param {string} secret - The user's secret.
+ * @param {string} secret - The user's secret key (hex string).
  */
 export async function loginWithSecret(username, secret) {
+    // 1. Derive private key from username + secret
     const privateKey = await getPrivateKey(username, secret);
     const publicKey = await ed.getPublicKey(privateKey);
-    const publicKeyHex = bytesToHex(publicKey);
+    const publicKeyB64 = base64Encode(publicKey);
 
-    // 1. Get challenge
-    const challengeResponse = await fetch(`${apiBaseUrlValue}/api/challenge/${publicKeyHex}`);
+    // 2. Get challenge
+    const challengeResponse = await fetch(`${apiBaseUrlValue}/auth/challenge`, {
+        method: 'POST',
+    });
     if (!challengeResponse.ok) {
         const error = await challengeResponse.text();
         throw new Error(`Failed to get challenge: ${error}`);
     }
     const { challenge } = await challengeResponse.json();
 
-    // 2. Sign challenge
-    const signature = await ed.sign(challenge, privateKey);
-    const signatureHex = bytesToHex(signature);
+    // 3. Sign challenge (convert string to bytes first)
+    const encoder = new TextEncoder();
+    const challengeBytes = encoder.encode(challenge);
+    const signature = await ed.sign(challengeBytes, privateKey);
+    const signatureB64 = base64Encode(signature);
 
-    // 3. Request JWT
-    const loginResponse = await fetch(`${apiBaseUrlValue}/api/login`, {
+    // 4. Request JWT
+    const loginResponse = await fetch(`${apiBaseUrlValue}/auth/login`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-            public_key: publicKeyHex,
-            signature: signatureHex,
+            public_key_b64: publicKeyB64,
+            username: username,
+            challenge: challenge,
+            signature_b64: signatureB64,
         }),
     });
 
@@ -138,7 +216,7 @@ export async function loginWithSecret(username, secret) {
 
     const { token } = await loginResponse.json();
     jwt.set(token);
-    currentUser.set({ username, publicKey: publicKeyHex, isWallet: false });
+    // currentUser will be set automatically by JWT subscription
 
     return token;
 }
@@ -194,16 +272,29 @@ export async function loginWithWallet() {
 }
 
 /**
- * A placeholder for the account recovery logic.
+ * Recovers an account using the recovery phrase.
+ * Derives the secret key from the mnemonic and logs in.
  * @param {string} username - The username.
- * @param {string} recoveryPhrase - The recovery phrase.
+ * @param {string} mnemonic - The 24-word recovery phrase.
  */
-export async function recoverAccount(username, recoveryPhrase) {
-    // This is a placeholder. In a real implementation, you would use the
-    // recovery phrase to regenerate the user's private key.
-    console.log(`Recovering account for ${username} with phrase: ${recoveryPhrase}`);
-    // For now, we'll just throw an error to indicate that this is not implemented.
-    throw new Error('Account recovery is not yet implemented.');
+export async function recoverAccount(username, mnemonic) {
+    if (!bip39.validateMnemonic(mnemonic)) {
+        throw new Error('Invalid recovery phrase');
+    }
+    
+    // Derive seed from mnemonic
+    const seed = await bip39.mnemonicToSeed(mnemonic);
+    
+    // Use first 32 bytes as secret key
+    const secretKey = bytesToHex(seed.slice(0, 32));
+    
+    // Login with the recovered secret
+    const token = await loginWithSecret(username, secretKey);
+    
+    // Store the recovery phrase
+    recoveryPhrase.set(mnemonic);
+    
+    return token;
 }
 
 /**
@@ -211,6 +302,7 @@ export async function recoverAccount(username, recoveryPhrase) {
  */
 export function logout() {
     jwt.set(null);
+    recoveryPhrase.set(null);
 }
 
 /**

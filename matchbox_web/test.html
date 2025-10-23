@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Matchbox Web Components Test</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 50px auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        h1 {
+            color: #333;
+            text-align: center;
+        }
+        .container {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 400px;
+        }
+        .info {
+            background-color: #e3f2fd;
+            border-left: 4px solid #2196f3;
+            padding: 15px;
+            margin-bottom: 20px;
+            border-radius: 4px;
+        }
+        .info h3 {
+            margin-top: 0;
+            color: #1976d2;
+        }
+        .info code {
+            background-color: #fff;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-family: 'Courier New', monospace;
+        }
+    </style>
+</head>
+<body>
+    <h1>Matchbox Web Components Test</h1>
+    
+    <div class="info">
+        <h3>📦 Web Component Demo</h3>
+        <p>This page demonstrates the Matchbox authentication component as a web component.</p>
+        <p>The component is loaded from: <code>web-components/matchbox-web.es.js</code></p>
+        <p>Dependencies: <code>argon2-browser</code> (loaded from CDN)</p>
+    </div>
+
+    <div class="container">
+        <!-- Web Component Usage -->
+        <matchbox-auth></matchbox-auth>
+    </div>
+
+    <!-- Load argon2-browser from CDN -->
+    <script src="https://unpkg.com/argon2-browser@1.18.0/dist/argon2-bundled.min.js"></script>
+    
+    <!-- Load the web component bundle -->
+    <script type="module">
+        import * as MatchboxWeb from './web-components/matchbox-web.es.js';
+        
+        console.log('Matchbox Web Components loaded:', MatchboxWeb);
+        
+        // You can also access the service functions programmatically
+        window.MatchboxWeb = MatchboxWeb;
+        
+        // Listen for custom events if needed
+        const authComponent = document.querySelector('matchbox-auth');
+        if (authComponent) {
+            console.log('matchbox-auth component found:', authComponent);
+        }
+    </script>
+
+    <script>
+        // Example: Using service functions programmatically (after login)
+        window.addEventListener('load', () => {
+            console.log('Page loaded. Matchbox Web ready!');
+            console.log('Available functions:', Object.keys(window.MatchboxWeb || {}));
+        });
+    </script>
+</body>
+</html>
