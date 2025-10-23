@@ -47,6 +47,7 @@ pub fn generate_login_payload(
     let signature_b64 = general_purpose::STANDARD.encode(signature.to_bytes());
     let login_payload = json!({
         "public_key_b64": public_key_b64,
+        "username": username,
         "challenge": challenge,
         "signature_b64": signature_b64
     });

@@ -21,7 +21,8 @@ pub const CHALLENGE_EXPIRATION: Duration = Duration::from_secs(60);
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Claims {
-    pub sub: String,
+    pub sub: String,  // public key
+    pub username: String,
     pub exp: usize,
 }
 
@@ -93,6 +94,7 @@ pub fn verify_signature(
 
 pub fn issue_jwt(
     public_key_b64: String,
+    username: String,
     secret: &AuthSecret,
 ) -> Result<String, jsonwebtoken::errors::Error> {
     let expiration = chrono::Utc::now()
@@ -102,6 +104,7 @@ pub fn issue_jwt(
 
     let claims = Claims {
         sub: public_key_b64,
+        username,
         exp: expiration as usize,
     };
 

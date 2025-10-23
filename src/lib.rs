@@ -18,6 +18,7 @@ use matchbox_signaling::SignalingServerBuilder;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::net::SocketAddr;
+use tower_http::cors::CorsLayer;
 use tracing::info;
 use tracing_subscriber::prelude::*;
 
@@ -50,7 +51,8 @@ impl FromRef<AppState> for AuthSecret {
 
 pub async fn run(addr: SocketAddr) -> Result<(), Box<dyn std::error::Error>> {
     dotenvy::dotenv().ok();
-    let secret = std::env::var("JWT_SECRET").expect("JWT_SECRET must be set");
+    let secret = std::env::var("JWT_SECRET")
+        .unwrap_or_else(|_| "test-secret-key-for-development-only".to_string());
     let state = ServerState::default();
     let app_state = AppState {
         state: state.clone(),
@@ -138,6 +140,8 @@ fn app(state: AppState) -> Router {
             post(create_lobby_handler).get(list_lobbies_handler),
         )
         .route("/lobbies/:lobby_id/join", post(join_lobby_handler))
+        // TODO: Restrict CORS for production environments
+        .layer(CorsLayer::very_permissive())
         .with_state(state)
 }
 
@@ -158,6 +162,7 @@ async fn challenge_handler(State(state): State<AppState>) -> Json<ChallengeRespo
 #[derive(Deserialize)]
 pub struct LoginRequest {
     public_key_b64: String,
+    username: String,
     challenge: String,
     signature_b64: String,
 }
@@ -166,11 +171,17 @@ async fn login_handler(
     State(state): State<AppState>,
     Json(payload): Json<LoginRequest>,
 ) -> impl IntoResponse {
+    tracing::info!(
+        pubkey = %payload.public_key_b64,
+        "Login attempt"
+    );
+    
     if !state
         .state
         .challenge_manager
         .verify_challenge(&payload.challenge)
     {
+        tracing::warn!(pubkey = %payload.public_key_b64, "Challenge verification failed");
         return Err((StatusCode::UNAUTHORIZED, "Invalid challenge"));
     }
 
@@ -179,17 +190,30 @@ async fn login_handler(
         &payload.challenge,
         &payload.signature_b64,
     ) {
-        Ok(valid) => valid,
-        Err(_) => return Err((StatusCode::UNAUTHORIZED, "Invalid signature")),
+        Ok(valid) => {
+            tracing::debug!(pubkey = %payload.public_key_b64, signature_valid = valid, "Signature verification result");
+            valid
+        }
+        Err(e) => {
+            tracing::warn!(pubkey = %payload.public_key_b64, error = ?e, "Signature verification error");
+            return Err((StatusCode::UNAUTHORIZED, "Invalid signature"));
+        }
     };
 
     if !signature_valid {
+        tracing::warn!(pubkey = %payload.public_key_b64, "Signature validation failed");
         return Err((StatusCode::UNAUTHORIZED, "Invalid signature"));
     }
 
-    match auth::issue_jwt(payload.public_key_b64, &state.secret) {
-        Ok(token) => Ok(Json(json!({ "token": token }))),
-        Err(_) => Err((StatusCode::INTERNAL_SERVER_ERROR, "Failed to issue token")),
+    match auth::issue_jwt(payload.public_key_b64.clone(), payload.username.clone(), &state.secret) {
+        Ok(token) => {
+            tracing::info!(pubkey = %payload.public_key_b64, username = %payload.username, "Login successful");
+            Ok(Json(json!({ "token": token })))
+        }
+        Err(_) => {
+            tracing::error!(pubkey = %payload.public_key_b64, "Failed to issue JWT");
+            Err((StatusCode::INTERNAL_SERVER_ERROR, "Failed to issue token"))
+        }
     }
 }
 
