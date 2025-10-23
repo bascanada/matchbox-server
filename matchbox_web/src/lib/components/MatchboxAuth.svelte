@@ -193,7 +193,7 @@
       />
       {#if view === 'secretKeyLogin'}
         <input
-          type="text"
+          type="password"
           placeholder="Secret Key (like a password)"
           bind:value={secret}
           disabled={isLoading}

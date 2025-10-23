@@ -140,6 +140,7 @@ fn app(state: AppState) -> Router {
             post(create_lobby_handler).get(list_lobbies_handler),
         )
         .route("/lobbies/:lobby_id/join", post(join_lobby_handler))
+        // TODO: Restrict CORS for production environments
         .layer(CorsLayer::very_permissive())
         .with_state(state)
 }

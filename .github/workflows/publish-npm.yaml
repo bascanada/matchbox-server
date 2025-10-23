@@ -61,13 +61,9 @@ jobs:
         if: steps.version.outputs.changed == 'true'
         run: npm ci
 
-      - name: Build package
+      - name: Build all
         if: steps.version.outputs.changed == 'true'
-        run: npm run build
-
-      - name: Build web components
-        if: steps.version.outputs.changed == 'true'
-        run: npm run build:webcomponents
+        run: npm run build:all
 
       - name: Configure npm for publish
         if: steps.version.outputs.changed == 'true'

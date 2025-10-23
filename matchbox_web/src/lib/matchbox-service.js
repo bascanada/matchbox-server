@@ -1,7 +1,12 @@
 import { writable } from 'svelte/store';
 import * as bip39 from 'bip39';
-import * as ed from 'noble-ed25519';
+import * as ed from '@noble/ed25519';
+import { sha512 } from '@noble/hashes/sha2.js';
 import { ethers } from 'ethers';
+
+// Enable synchronous methods for ed25519
+ed.hashes.sha512 = sha512;
+ed.hashes.sha512Async = (m) => Promise.resolve(sha512(m));
 
 // --- Configuration ---
 const API_BASE_URL = writable('http://localhost:3536'); // Default, user can change this
@@ -58,7 +63,7 @@ function decodeJWT(token) {
     const parts = token.split('.');
     if (parts.length !== 3) return null;
     const payload = parts[1];
-    const decoded = atob(payload.replace(/-/g, '+').replace(/_/g, '/'));
+    const decoded = Buffer.from(payload.replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8');
     return JSON.parse(decoded);
   } catch (e) {
     console.error('Failed to decode JWT:', e);
@@ -113,8 +118,8 @@ export async function getPrivateKey(username, secret) {
     const hash = await argon2.hash({
         pass: secret,
         salt: salt,
-        time: 1,
-        mem: 16 * 1024,
+        time: 2,
+        mem: 64 * 1024,
         hashLen: 32,
         parallelism: 1,
         type: argon2.ArgonType?.Argon2id || 2, // Argon2id = 2
@@ -148,25 +153,28 @@ function generateRecoveryKey() {
 /**
  * Creates a new account by generating a random secret key and recovery key.
  * @param {string} username - The desired username.
- * @returns {Promise<{token: string, recoveryKey: string, secretKey: string}>}
+ * @returns {Promise<{token: string, recoveryPhrase: string, secretKey: string}>}
  */
 export async function createAccount(username) {
-    // Generate a random secret key (32 bytes)
-    const secretKey = generateSecretKey();
-    
-    // Generate a real mnemonic for recovery
+    // 1. Generate a mnemonic phrase which will be the master recovery key.
     const mnemonic = bip39.generateMnemonic();
-    
-    // Login with the generated secret to create the account on the server
+
+    // 2. Derive a deterministic seed from the mnemonic.
+    const seed = await bip39.mnemonicToSeed(mnemonic);
+
+    // 3. Use the first 32 bytes of the seed as the secret key.
+    const secretKey = bytesToHex(seed.slice(0, 32));
+
+    // 4. Login with the derived secret to register the public key on the server.
     const token = await loginWithSecret(username, secretKey);
-    
-    // Store the mnemonic
+
+    // 5. Store the mnemonic phrase for the session.
     recoveryPhrase.set(mnemonic);
-    
+
     return {
         token,
-        recoveryPhrase: mnemonic,
-        secretKey,
+        recoveryPhrase: mnemonic, // Return the mnemonic to the user.
+        secretKey, // Also return the derived secret key for immediate use.
     };
 }
 
@@ -178,7 +186,7 @@ export async function createAccount(username) {
 export async function loginWithSecret(username, secret) {
     // 1. Derive private key from username + secret
     const privateKey = await getPrivateKey(username, secret);
-    const publicKey = await ed.getPublicKey(privateKey);
+    const publicKey = await ed.getPublicKeyAsync(privateKey);
     const publicKeyB64 = base64Encode(publicKey);
 
     // 2. Get challenge
@@ -194,7 +202,7 @@ export async function loginWithSecret(username, secret) {
     // 3. Sign challenge (convert string to bytes first)
     const encoder = new TextEncoder();
     const challengeBytes = encoder.encode(challenge);
-    const signature = await ed.sign(challengeBytes, privateKey);
+    const signature = await ed.signAsync(challengeBytes, privateKey);
     const signatureB64 = base64Encode(signature);
 
     // 4. Request JWT
@@ -223,6 +231,8 @@ export async function loginWithSecret(username, secret) {
 
 /**
  * Initiates login process using a browser wallet (e.g., MetaMask).
+ * WARNING: This feature requires backend implementation of /api/challenge/eth/:address
+ * and /api/login/eth endpoints, which are not yet implemented.
  */
 export async function loginWithWallet() {
     if (!window.ethereum) {
@@ -282,16 +292,16 @@ export async function recoverAccount(username, mnemonic) {
         throw new Error('Invalid recovery phrase');
     }
     
-    // Derive seed from mnemonic
+    // Derive seed from mnemonic, same as in createAccount
     const seed = await bip39.mnemonicToSeed(mnemonic);
     
-    // Use first 32 bytes as secret key
+    // Use first 32 bytes as the secret key
     const secretKey = bytesToHex(seed.slice(0, 32));
     
     // Login with the recovered secret
     const token = await loginWithSecret(username, secretKey);
     
-    // Store the recovery phrase
+    // Store the recovery phrase for the new session
     recoveryPhrase.set(mnemonic);
     
     return token;
