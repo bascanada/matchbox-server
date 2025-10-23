@@ -154,18 +154,18 @@ export async function createAccount(username) {
     // Generate a random secret key (32 bytes)
     const secretKey = generateSecretKey();
     
-    // Generate a recovery key (also 32 bytes, separate from secret key)
-    const recoveryKey = generateRecoveryKey();
+    // Generate a real mnemonic for recovery
+    const mnemonic = bip39.generateMnemonic();
     
-    // Login with the generated secret
+    // Login with the generated secret to create the account on the server
     const token = await loginWithSecret(username, secretKey);
     
-    // Store the recovery key
-    recoveryPhrase.set(recoveryKey);
+    // Store the mnemonic
+    recoveryPhrase.set(mnemonic);
     
     return {
         token,
-        recoveryKey, // Changed from recoveryPhrase to recoveryKey
+        recoveryPhrase: mnemonic,
         secretKey,
     };
 }
