@@ -18,9 +18,10 @@
         }
         .container {
             display: flex;
+            flex-direction: column;
             justify-content: center;
             align-items: center;
-            min-height: 400px;
+            gap: 20px;
         }
         .info {
             background-color: #e3f2fd;
@@ -54,6 +55,7 @@
     <div class="container">
         <!-- Web Component Usage -->
         <matchbox-auth></matchbox-auth>
+        <matchbox-friends-list></matchbox-friends-list>
     </div>
 
     <!-- Load argon2-browser from CDN -->

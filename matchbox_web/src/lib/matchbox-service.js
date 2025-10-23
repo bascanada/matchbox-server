@@ -1,4 +1,4 @@
-import { writable } from 'svelte/store';
+import { writable, get } from 'svelte/store';
 import * as bip39 from 'bip39';
 import * as ed from '@noble/ed25519';
 import { sha512 } from '@noble/hashes/sha2.js';
@@ -22,6 +22,12 @@ export const isLoggedIn = writable(false);
 export const currentUser = writable(null);
 export const jwt = writable(browser ? localStorage.getItem('matchbox-jwt') : null);
 export const recoveryPhrase = writable(browser ? localStorage.getItem('matchbox-recovery') : null);
+export const friendsList = writable(
+    browser ? JSON.parse(localStorage.getItem('matchbox-friends') || '[]') : []
+);
+
+
+// --- Subscriptions ---
 
 // Automatically update login status when JWT changes
 jwt.subscribe(token => {
@@ -52,6 +58,12 @@ recoveryPhrase.subscribe(phrase => {
   } else {
     localStorage.removeItem('matchbox-recovery');
   }
+});
+
+// Persist friends list to localStorage
+friendsList.subscribe(list => {
+    if (!browser) return;
+    localStorage.setItem('matchbox-friends', JSON.stringify(list));
 });
 
 
@@ -88,6 +100,16 @@ function hexToBytes(hex) {
 // Helper function for base64 encoding
 function base64Encode(bytes) {
   return btoa(String.fromCharCode(...bytes));
+}
+
+// Helper function for base64 decoding
+function base64Decode(str) {
+    const binaryString = atob(str);
+    const bytes = new Uint8Array(binaryString.length);
+    for (let i = 0; i < binaryString.length; i++) {
+        bytes[i] = binaryString.charCodeAt(i);
+    }
+    return bytes;
 }
 
 /**
@@ -314,6 +336,64 @@ export function logout() {
     jwt.set(null);
     recoveryPhrase.set(null);
 }
+
+// --- Friend Management ---
+
+/**
+ * Generates a friend code for the current user.
+ * A friend code is a base64 encoded JSON string containing the user's username and public key.
+ * @returns {string} The friend code.
+ */
+export function generateMyFriendCode() {
+    const user = get(currentUser);
+    if (!user) {
+        throw new Error('User not logged in.');
+    }
+    const friendInfo = {
+        username: user.username,
+        publicKey: user.publicKey
+    };
+    const json = JSON.stringify(friendInfo);
+    const bytes = new TextEncoder().encode(json);
+    return base64Encode(bytes);
+}
+
+/**
+ * Adds a friend from a friend code.
+ * @param {string} friendCode - The friend code to add.
+ * @throws {Error} If the friend code is invalid or the friend already exists.
+ */
+export function addFriendFromCode(friendCode) {
+    try {
+        const bytes = base64Decode(friendCode);
+        const json = new TextDecoder().decode(bytes);
+        const friendInfo = JSON.parse(json);
+
+        if (!friendInfo.username || !friendInfo.publicKey) {
+            throw new Error('Invalid friend code format.');
+        }
+
+        const currentFriends = get(friendsList);
+        if (currentFriends.some(friend => friend.publicKey === friendInfo.publicKey)) {
+            throw new Error('Friend already exists.');
+        }
+
+        friendsList.update(list => [...list, friendInfo]);
+
+    } catch (e) {
+        console.error('Failed to add friend:', e);
+        throw new Error('Invalid or malformed friend code.');
+    }
+}
+
+/**
+ * Removes a friend by their public key.
+ * @param {string} publicKey - The public key of the friend to remove.
+ */
+export function removeFriend(publicKey) {
+    friendsList.update(list => list.filter(friend => friend.publicKey !== publicKey));
+}
+
 
 /**
  * Allows changing the Matchbox server URL.
