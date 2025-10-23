@@ -315,7 +315,8 @@ export function setApiUrl(newUrl) {
 
 // Use dynamic import for argon2-browser and fallback to global/window if needed
 let argon2;
-(async () => {
+// Export a promise that resolves when argon2 is ready
+export const argon2Ready = (async () => {
   try {
     const argon2Module = await import('argon2-browser');
     argon2 = argon2Module.ArgonType ? argon2Module : (typeof window !== 'undefined' ? window.argon2 : undefined);
@@ -328,6 +329,7 @@ let argon2;
     }
     if (!argon2) {
       console.error('argon2-browser could not be loaded:', e);
+      throw e; // Propagate error to fail promise
     }
   }
 })();
