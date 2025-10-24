@@ -1,5 +1,6 @@
 <script>
-    import { friendsList, generateMyFriendCode, addFriendFromCode, removeFriend } from '../matchbox-service.js';
+    import { friendsList, generateMyFriendCode, addFriendFromCode, removeFriend, isLoggedIn } from '../matchbox-service.js';
+    import PubKeyDisplay from './PubKeyDisplay.svelte';
 
     let friendCodeToAdd = '';
     let myFriendCode = '';
@@ -35,37 +36,44 @@
 </script>
 
 <div class="friends-list-container">
-    <h2>Friends</h2>
+    {#if $isLoggedIn}
+        <h2>Friends</h2>
 
-    {#if $friendsList.length === 0}
-        <p>Your friends list is empty. Add a friend using their Friend Code!</p>
-    {/if}
+        {#if $friendsList.length === 0}
+            <p>Your friends list is empty. Add a friend using their Friend Code!</p>
+        {/if}
 
-    <ul>
-        {#each $friendsList as friend (friend.publicKey)}
-            <li>
-                <span>{friend.username}</span>
-                <button on:click={() => removeFriend(friend.publicKey)}>Remove</button>
-            </li>
-        {/each}
-    </ul>
+            <ul>
+                {#each $friendsList as friend (friend.publicKey)}
+                    <li>
+                        <div class="friend-info">
+                            <strong>{friend.username}</strong>
+                            <PubKeyDisplay pubkey={friend.publicKey} />
+                        </div>
+                        <button on:click={() => removeFriend(friend.publicKey)}>Remove</button>
+                    </li>
+                {/each}
+            </ul>
 
-    <div class="add-friend-section">
-        <h3>Add Friend</h3>
-        <input type="text" bind:value={friendCodeToAdd} placeholder="Enter Friend Code" />
-        <button on:click={handleAddFriend}>Add</button>
-    </div>
+        <div class="add-friend-section">
+            <h3>Add Friend</h3>
+            <input type="text" bind:value={friendCodeToAdd} placeholder="Enter Friend Code" />
+            <button on:click={handleAddFriend}>Add</button>
+        </div>
 
-    <div class="my-friend-code-section">
-        <button on:click={handleCopyFriendCode}>Share my Friend Code</button>
-    </div>
+        <div class="my-friend-code-section">
+            <button on:click={handleCopyFriendCode}>Share my Friend Code</button>
+        </div>
 
-    {#if errorMessage}
-        <p class="error">{errorMessage}</p>
-    {/if}
+        {#if errorMessage}
+            <p class="error">{errorMessage}</p>
+        {/if}
 
-    {#if successMessage}
-        <p class="success">{successMessage}</p>
+        {#if successMessage}
+            <p class="success">{successMessage}</p>
+        {/if}
+    {:else}
+        <p>Please log in to see your friends list.</p>
     {/if}
 </div>
 
