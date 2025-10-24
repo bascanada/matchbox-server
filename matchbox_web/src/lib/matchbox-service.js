@@ -1,4 +1,4 @@
-import { writable } from 'svelte/store';
+import { writable, get } from 'svelte/store';
 import * as bip39 from 'bip39';
 import * as ed from '@noble/ed25519';
 import { sha512 } from '@noble/hashes/sha2.js';
@@ -22,6 +22,12 @@ export const isLoggedIn = writable(false);
 export const currentUser = writable(null);
 export const jwt = writable(browser ? localStorage.getItem('matchbox-jwt') : null);
 export const recoveryPhrase = writable(browser ? localStorage.getItem('matchbox-recovery') : null);
+export const friendsList = writable(
+    browser ? JSON.parse(localStorage.getItem('matchbox-friends') || '[]') : []
+);
+
+
+// --- Subscriptions ---
 
 // Automatically update login status when JWT changes
 jwt.subscribe(token => {
@@ -54,6 +60,12 @@ recoveryPhrase.subscribe(phrase => {
   }
 });
 
+// Persist friends list to localStorage
+friendsList.subscribe(list => {
+    if (!browser) return;
+    localStorage.setItem('matchbox-friends', JSON.stringify(list));
+});
+
 
 // --- Helper Functions ---
 
@@ -62,8 +74,33 @@ function decodeJWT(token) {
   try {
     const parts = token.split('.');
     if (parts.length !== 3) return null;
-    const payload = parts[1];
-    const decoded = Buffer.from(payload.replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8');
+    let payload = parts[1];
+    // base64url -> base64
+    payload = payload.replace(/-/g, '+').replace(/_/g, '/');
+    // pad
+    const pad = payload.length % 4;
+    if (pad) payload += '='.repeat(4 - pad);
+
+    let decoded;
+    // Prefer Buffer when available (Node), otherwise use browser APIs
+    if (typeof Buffer !== 'undefined' && typeof Buffer.from === 'function') {
+      decoded = Buffer.from(payload, 'base64').toString('utf8');
+    } else if (typeof atob === 'function') {
+      const binary = atob(payload);
+      const len = binary.length;
+      const bytes = new Uint8Array(len);
+      for (let i = 0; i < len; i++) bytes[i] = binary.charCodeAt(i);
+      decoded = new TextDecoder().decode(bytes);
+    } else {
+      // Fallback: try using globalThis
+      const g = typeof globalThis !== 'undefined' ? globalThis : window || {};
+      if (g.Buffer && typeof g.Buffer.from === 'function') {
+        decoded = g.Buffer.from(payload, 'base64').toString('utf8');
+      } else {
+        throw new Error('No base64 decoder available');
+      }
+    }
+
     return JSON.parse(decoded);
   } catch (e) {
     console.error('Failed to decode JWT:', e);
@@ -88,6 +125,16 @@ function hexToBytes(hex) {
 // Helper function for base64 encoding
 function base64Encode(bytes) {
   return btoa(String.fromCharCode(...bytes));
+}
+
+// Helper function for base64 decoding
+function base64Decode(str) {
+    const binaryString = atob(str);
+    const bytes = new Uint8Array(binaryString.length);
+    for (let i = 0; i < binaryString.length; i++) {
+        bytes[i] = binaryString.charCodeAt(i);
+    }
+    return bytes;
 }
 
 /**
@@ -315,6 +362,64 @@ export function logout() {
     recoveryPhrase.set(null);
 }
 
+// --- Friend Management ---
+
+/**
+ * Generates a friend code for the current user.
+ * A friend code is a base64 encoded JSON string containing the user's username and public key.
+ * @returns {string} The friend code.
+ */
+export function generateMyFriendCode() {
+    const user = get(currentUser);
+    if (!user) {
+        throw new Error('User not logged in.');
+    }
+    const friendInfo = {
+        username: user.username,
+        publicKey: user.publicKey
+    };
+    const json = JSON.stringify(friendInfo);
+    const bytes = new TextEncoder().encode(json);
+    return base64Encode(bytes);
+}
+
+/**
+ * Adds a friend from a friend code.
+ * @param {string} friendCode - The friend code to add.
+ * @throws {Error} If the friend code is invalid or the friend already exists.
+ */
+export function addFriendFromCode(friendCode) {
+    try {
+        const bytes = base64Decode(friendCode);
+        const json = new TextDecoder().decode(bytes);
+        const friendInfo = JSON.parse(json);
+
+        if (!friendInfo.username || !friendInfo.publicKey) {
+            throw new Error('Invalid friend code format.');
+        }
+
+        const currentFriends = get(friendsList);
+        if (currentFriends.some(friend => friend.publicKey === friendInfo.publicKey)) {
+            throw new Error('Friend already exists.');
+        }
+
+        friendsList.update(list => [...list, friendInfo]);
+
+    } catch (e) {
+        console.error('Failed to add friend:', e);
+        throw new Error('Invalid or malformed friend code.');
+    }
+}
+
+/**
+ * Removes a friend by their public key.
+ * @param {string} publicKey - The public key of the friend to remove.
+ */
+export function removeFriend(publicKey) {
+    friendsList.update(list => list.filter(friend => friend.publicKey !== publicKey));
+}
+
+
 /**
  * Allows changing the Matchbox server URL.
  * @param {string} newUrl - The new URL for the Matchbox server.
@@ -326,7 +431,7 @@ export function setApiUrl(newUrl) {
 // Use dynamic import for argon2-browser and fallback to global/window if needed
 let argon2;
 // Export a promise that resolves when argon2 is ready
-export const argon2Ready = (async () => {
+export const argon2Ready = browser ? (async () => {
   try {
     const argon2Module = await import('argon2-browser');
     argon2 = argon2Module.ArgonType ? argon2Module : (typeof window !== 'undefined' ? window.argon2 : undefined);
@@ -342,4 +447,4 @@ export const argon2Ready = (async () => {
       throw e; // Propagate error to fail promise
     }
   }
-})();
+})() : Promise.resolve();
