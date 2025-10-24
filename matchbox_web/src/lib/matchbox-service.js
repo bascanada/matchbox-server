@@ -74,8 +74,33 @@ function decodeJWT(token) {
   try {
     const parts = token.split('.');
     if (parts.length !== 3) return null;
-    const payload = parts[1];
-    const decoded = Buffer.from(payload.replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8');
+    let payload = parts[1];
+    // base64url -> base64
+    payload = payload.replace(/-/g, '+').replace(/_/g, '/');
+    // pad
+    const pad = payload.length % 4;
+    if (pad) payload += '='.repeat(4 - pad);
+
+    let decoded;
+    // Prefer Buffer when available (Node), otherwise use browser APIs
+    if (typeof Buffer !== 'undefined' && typeof Buffer.from === 'function') {
+      decoded = Buffer.from(payload, 'base64').toString('utf8');
+    } else if (typeof atob === 'function') {
+      const binary = atob(payload);
+      const len = binary.length;
+      const bytes = new Uint8Array(len);
+      for (let i = 0; i < len; i++) bytes[i] = binary.charCodeAt(i);
+      decoded = new TextDecoder().decode(bytes);
+    } else {
+      // Fallback: try using globalThis
+      const g = typeof globalThis !== 'undefined' ? globalThis : window || {};
+      if (g.Buffer && typeof g.Buffer.from === 'function') {
+        decoded = g.Buffer.from(payload, 'base64').toString('utf8');
+      } else {
+        throw new Error('No base64 decoder available');
+      }
+    }
+
     return JSON.parse(decoded);
   } catch (e) {
     console.error('Failed to decode JWT:', e);
@@ -406,7 +431,7 @@ export function setApiUrl(newUrl) {
 // Use dynamic import for argon2-browser and fallback to global/window if needed
 let argon2;
 // Export a promise that resolves when argon2 is ready
-export const argon2Ready = (async () => {
+export const argon2Ready = browser ? (async () => {
   try {
     const argon2Module = await import('argon2-browser');
     argon2 = argon2Module.ArgonType ? argon2Module : (typeof window !== 'undefined' ? window.argon2 : undefined);
@@ -422,4 +447,4 @@ export const argon2Ready = (async () => {
       throw e; // Propagate error to fail promise
     }
   }
-})();
+})() : Promise.resolve();
