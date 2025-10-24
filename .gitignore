@@ -2,3 +2,6 @@
 **/vendor*
 .DS_Store
 
+# Game Registry
+game_registry_service/.env
+game_registry_storage/

@@ -1,3 +1,10 @@
+[workspace]
+members = [
+    ".",
+    "game_registry_service",
+    "matchbox-auth-common",
+]
+
 [package]
 name = "matchbox_server"
 version = "0.11.0"
@@ -28,6 +35,7 @@ uuid = { version = "1.4", features = ["serde", "v4"] }
 clap = { version = "4.3", features = ["derive", "env"] }
 thiserror = "2.0"
 tokio-stream = "0.1"
+matchbox-auth-common = { path = "matchbox-auth-common" }
 argon2 = "0.5"
 ed25519-dalek = { version = "2.1", features = ["serde"] }
 jsonwebtoken = "9.2"

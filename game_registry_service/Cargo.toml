@@ -1,0 +1,17 @@
+[package]
+name = "game_registry_service"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+sqlx = { version = "0.7", features = [ "runtime-tokio-rustls", "sqlite" ] }
+dotenvy = "0.15"
+matchbox-auth-common = { path = "../matchbox-auth-common" }
+
+axum = "0.7"
+tokio = { version = "1", features = ["full"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+sha2 = "0.10"
