@@ -17,15 +17,18 @@ fi
 echo "Setting up multiplayer game with $NUM_PLAYERS players..."
 
 # Get the directory where this script is located
-SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+# When sourced, BASH_SOURCE[0] contains the path to the script
+SCRIPT_DIR=$HOME/Project/bascanada/matchbox-server
+
 
 # Function to authenticate a player and get token
 authenticate_player() {
   local username="$1"
   local password="$2"
+
   
   local challenge=$(curl -s -X POST "$SERVER_URL/auth/challenge" | jq -r '.challenge')
-  local auth_json=$(cd "$SCRIPT_DIR" && cargo run --quiet --example client-auth-demo -- -u "$username" -p "$password" -c "$challenge" 2>/dev/null)
+  local auth_json=$(cargo run --quiet --manifest-path "$SCRIPT_DIR/Cargo.toml" --example client-auth-demo -- -u "$username" -p "$password" -c "$challenge")
   local token=$(curl -s -X POST "$SERVER_URL/auth/login" \
     -H 'Content-Type: application/json' \
     -d "$auth_json" | jq -r '.token')
@@ -48,7 +51,7 @@ echo "Player 1 creating lobby..."
 LOBBY_ID=$(curl -s -X POST "$SERVER_URL/lobbies" \
   -H "Authorization: Bearer ${TOKENS[1]}" \
   -H 'Content-Type: application/json' \
-  -d '{"is_private":false}' | jq -r '.id')
+  -d '{"is_private":true}' | jq -r '.id')
 
 if [ -z "$LOBBY_ID" ] || [ "$LOBBY_ID" = "null" ]; then
   echo "Error: Failed to create lobby" >&2

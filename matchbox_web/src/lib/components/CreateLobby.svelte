@@ -11,9 +11,10 @@
     try {
       const whitelist = isPrivate ? selectedFriends : [];
       await createLobby(isPrivate, whitelist);
-      toast.success('Lobby created successfully!');
+      // use toast.push since toast.success/toast.error helpers may not be available
+      toast.push('Lobby created successfully!');
     } catch (error) {
-      toast.error(error.message);
+      toast.push(error.message || 'Failed to create lobby');
     } finally {
       isLoading = false;
     }

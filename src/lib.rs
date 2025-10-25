@@ -6,6 +6,7 @@ pub mod state;
 pub mod topology;
 
 use crate::{auth::AuthSecret, state::ServerState, topology::MatchmakingDemoTopology};
+use axum::http::HeaderMap;
 use axum::{
     extract::{FromRef, Path, State},
     http::StatusCode,
@@ -175,7 +176,7 @@ async fn login_handler(
         pubkey = %payload.public_key_b64,
         "Login attempt"
     );
-    
+
     if !state
         .state
         .challenge_manager
@@ -205,7 +206,11 @@ async fn login_handler(
         return Err((StatusCode::UNAUTHORIZED, "Invalid signature"));
     }
 
-    match auth::issue_jwt(payload.public_key_b64.clone(), payload.username.clone(), &state.secret) {
+    match auth::issue_jwt(
+        payload.public_key_b64.clone(),
+        payload.username.clone(),
+        &state.secret,
+    ) {
         Ok(token) => {
             tracing::info!(pubkey = %payload.public_key_b64, username = %payload.username, "Login successful");
             Ok(Json(json!({ "token": token })))
@@ -230,26 +235,40 @@ async fn create_lobby_handler(
     Json(payload): Json<CreateLobbyRequest>,
 ) -> impl IntoResponse {
     let mut lobby_manager = state.state.lobby_manager.write().unwrap();
-    let mut lobby = if payload.whitelist.is_some() {
+    let lobby = if payload.whitelist.is_some() {
         lobby_manager.create_lobby_with_whitelist(payload.is_private, payload.whitelist)
     } else {
         lobby_manager.create_lobby(payload.is_private)
     };
     let mut players_in_lobbies = state.state.players_in_lobbies.write().unwrap();
     players_in_lobbies.insert(claims.sub.clone(), lobby.id);
-    lobby.players.insert(claims.sub.clone());
+    // Ensure the created lobby stored in the manager has the creator added to its players set
+    if let Err(e) = lobby_manager.add_player_to_lobby(&lobby.id, claims.sub.clone()) {
+        tracing::error!(lobby_id = %lobby.id, error = ?e, "Failed to add creator to lobby players set");
+    }
     tracing::info!(lobby_id = %lobby.id, pubkey = %&claims.sub[..8], "Lobby created and player added");
     Json(lobby)
 }
 
-async fn list_lobbies_handler(State(state): State<AppState>) -> impl IntoResponse {
-    // Extract Authorization header from request extensions
-    let player_pubkey = {
-        // This is a hack: axum doesn't provide headers in handler args, so we use a workaround
-        // In real code, refactor to extract headers properly
-        // For now, just return None (anonymous)
-        None
-    };
+async fn list_lobbies_handler(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    // Try to extract bearer token from Authorization header and decode claims
+    let player_pubkey = headers
+        .get("authorization")
+        .and_then(|hv| hv.to_str().ok())
+        .and_then(|auth| auth.strip_prefix("Bearer "))
+        .and_then(|token| {
+            decode::<auth::Claims>(
+                token,
+                &DecodingKey::from_secret(state.secret.0.as_ref()),
+                &Validation::default(),
+            )
+            .ok()
+            .map(|data| data.claims.sub)
+        });
+
     let lobby_manager = state.state.lobby_manager.read().unwrap();
     let lobbies = lobby_manager.get_lobbies_for_player(player_pubkey);
     Json(lobbies)

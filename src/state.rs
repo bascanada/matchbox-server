@@ -94,6 +94,12 @@ impl LobbyManager {
                 if !lobby.is_private && lobby.status == crate::lobby::LobbyStatus::Waiting {
                     return true;
                 }
+                // If the player is already in the lobby (e.g., the creator), always show it to them
+                if let Some(ref pk) = player_pubkey {
+                    if lobby.players.contains(pk) {
+                        return true;
+                    }
+                }
                 // If lobby is private and has a whitelist, only show if player is whitelisted
                 if lobby.is_private {
                     if let Some(whitelist) = &lobby.whitelist {

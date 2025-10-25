@@ -1,6 +1,6 @@
 <script>
     import { onMount, onDestroy } from 'svelte';
-    import { lobbies, getLobbies, joinLobby, deleteLobby, friendsList, currentUser } from '../matchbox-service.js';
+    import { lobbies, getLobbies, joinLobby, deleteLobby, friendsList, currentUser, isLoggedIn } from '../matchbox-service.js';
     import { toast } from '@zerodevx/svelte-toast';
     import PubKeyDisplay from './PubKeyDisplay.svelte';
 
@@ -22,7 +22,7 @@
         try {
             await getLobbies();
         } catch (error) {
-            toast.error(error.message);
+            toast.push(error.message || 'Failed to fetch lobbies');
         } finally {
             isLoading = false;
         }
@@ -40,23 +40,25 @@
     async function handleJoin(lobbyId) {
         try {
             await joinLobby(lobbyId);
-            toast.success('Joined lobby successfully!');
+            toast.push('Joined lobby successfully!');
         } catch (error) {
-            toast.error(error.message);
+            toast.push(error.message || 'Failed to join lobby');
         }
     }
 
     async function handleDelete(lobbyId) {
         try {
             await deleteLobby(lobbyId);
-            toast.success('Lobby deleted (locally).');
+            toast.push('Lobby deleted (locally).');
         } catch (error) {
-            toast.error(error.message);
+            toast.push(error.message || 'Failed to delete lobby');
         }
     }
 
-    // Fetch lobbies when the component mounts
-    onMount(fetchLobbies);
+    // Fetch lobbies when the component mounts (only if logged in)
+    onMount(() => {
+        if ($isLoggedIn) fetchLobbies();
+    });
 
     // Clear the interval when the component is destroyed
     onDestroy(() => {
@@ -66,6 +68,7 @@
     });
 </script>
 
+{#if $isLoggedIn}
 <div class="lobby-list-container">
     <div class="header">
         <h2>Lobbies</h2>
@@ -119,6 +122,12 @@
         </table>
     {/if}
 </div>
+{:else}
+<div class="lobby-list-container">
+    <p>Please log in to view and manage lobbies.</p>
+    <!-- Optionally the MatchboxAuth component could be shown here in the future -->
+</div>
+{/if}
 
 <style>
     .lobby-list-container {

@@ -3,6 +3,7 @@ import * as bip39 from 'bip39';
 import * as ed from '@noble/ed25519';
 import { sha512 } from '@noble/hashes/sha2.js';
 import { ethers } from 'ethers';
+import { toast } from '@zerodevx/svelte-toast';
 
 // Enable synchronous methods for ed25519
 ed.hashes.sha512 = sha512;
@@ -32,23 +33,48 @@ export const lobbies = writable([]);
 
 // Automatically update login status when JWT changes
 jwt.subscribe(token => {
-  if (!browser) return; // Don't run on the server
-  isLoggedIn.set(!!token);
-  if (!token) {
-    currentUser.set(null);
-    localStorage.removeItem('matchbox-jwt');
-  } else {
-    localStorage.setItem('matchbox-jwt', token);
-    // Decode JWT to get user info
-    const claims = decodeJWT(token);
-    if (claims) {
-      currentUser.set({ 
-        username: claims.username, 
-        publicKey: claims.sub, 
-        isWallet: false 
-      });
+    if (!browser) return; // Don't run on the server
+
+    // No token -> clear state
+    if (!token) {
+        isLoggedIn.set(false);
+        currentUser.set(null);
+        localStorage.removeItem('matchbox-jwt');
+        return;
     }
-  }
+
+    // Try to decode the token and validate expiration
+    const claims = decodeJWT(token);
+    if (!claims) {
+        // Invalid token: clear and notify
+        jwt.set(null);
+        isLoggedIn.set(false);
+        currentUser.set(null);
+        localStorage.removeItem('matchbox-jwt');
+        try { toast.push('Invalid session. Please log in again.'); } catch (e) { /* ignore */ }
+        return;
+    }
+
+    // If token has an expiration, check it (exp is seconds since epoch)
+    const now = Math.floor(Date.now() / 1000);
+    if (claims.exp && typeof claims.exp === 'number' && now >= claims.exp) {
+        // Token expired
+        jwt.set(null);
+        isLoggedIn.set(false);
+        currentUser.set(null);
+        localStorage.removeItem('matchbox-jwt');
+        try { toast.push('Your session has expired. Please log in again.'); } catch (e) { /* ignore */ }
+        return;
+    }
+
+    // Token is valid
+    isLoggedIn.set(true);
+    localStorage.setItem('matchbox-jwt', token);
+    currentUser.set({
+        username: claims.username,
+        publicKey: claims.sub,
+        isWallet: false,
+    });
 });
 
 // Store recovery phrase securely
