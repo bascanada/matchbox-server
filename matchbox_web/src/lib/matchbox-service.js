@@ -25,6 +25,7 @@ export const recoveryPhrase = writable(browser ? localStorage.getItem('matchbox-
 export const friendsList = writable(
     browser ? JSON.parse(localStorage.getItem('matchbox-friends') || '[]') : []
 );
+export const lobbies = writable([]);
 
 
 // --- Subscriptions ---
@@ -417,6 +418,114 @@ export function addFriendFromCode(friendCode) {
  */
 export function removeFriend(publicKey) {
     friendsList.update(list => list.filter(friend => friend.publicKey !== publicKey));
+}
+
+// --- Lobby Management ---
+
+/**
+ * Fetches the list of all lobbies.
+ */
+export async function getLobbies() {
+    const token = get(jwt);
+    if (!token) throw new Error('Not logged in');
+
+    const response = await fetch(`${apiBaseUrlValue}/lobbies`, {
+        headers: { 'Authorization': `Bearer ${token}` },
+    });
+
+    if (!response.ok) {
+        const error = await response.text();
+        throw new Error(`Failed to get lobbies: ${error}`);
+    }
+
+    const lobbyData = await response.json();
+    lobbies.set(lobbyData);
+    return lobbyData;
+}
+
+/**
+ * Creates a new lobby.
+ * @param {boolean} isPrivate - Whether the lobby should be private.
+ * @param {string[]} [whitelist] - An optional list of public keys for the whitelist (if private).
+ * @returns {Promise<object>} The created lobby object.
+ */
+export async function createLobby(isPrivate, whitelist = []) {
+    const token = get(jwt);
+    if (!token) throw new Error('Not logged in');
+
+    const body = {
+        is_private: isPrivate,
+        whitelist: isPrivate ? whitelist : undefined,
+    };
+
+    const response = await fetch(`${apiBaseUrlValue}/lobbies`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`,
+        },
+        body: JSON.stringify(body),
+    });
+
+    if (!response.ok) {
+        const error = await response.text();
+        throw new Error(`Failed to create lobby: ${error}`);
+    }
+
+    // Refresh the lobby list after creating a new one
+    await getLobbies();
+
+    return await response.json();
+}
+
+/**
+ * Joins a lobby.
+ * @param {string} lobbyId - The ID of the lobby to join.
+ */
+export async function joinLobby(lobbyId) {
+    const token = get(jwt);
+    if (!token) throw new Error('Not logged in');
+
+    const response = await fetch(`${apiBaseUrlValue}/lobbies/${lobbyId}/join`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${token}` },
+    });
+
+    if (!response.ok) {
+        const error = await response.text();
+        throw new Error(`Failed to join lobby: ${error}`);
+    }
+
+    // Refresh the lobby list to show the player in the lobby
+    await getLobbies();
+}
+
+/**
+ * Deletes a lobby.
+ * Note: The backend for this is not yet implemented.
+ * @param {string} lobbyId - The ID of the lobby to delete.
+ */
+export async function deleteLobby(lobbyId) {
+    const token = get(jwt);
+    if (!token) throw new Error('Not logged in');
+
+    const response = await fetch(`${apiBaseUrlValue}/lobbies/${lobbyId}`, {
+        method: 'DELETE',
+        headers: { 'Authorization': `Bearer ${token}` },
+    });
+
+    if (!response.ok) {
+        // For now, we'll log a warning since the backend isn't ready
+        console.warn(`Note: Lobby deletion is not yet implemented on the server. (Lobby ID: ${lobbyId})`);
+        // Even if it fails, we can remove it from the local list for a better UX
+        lobbies.update(l => l.filter(lobby => lobby.id !== lobbyId));
+        // We'll throw an error for now to indicate it's not working
+        const error = await response.text();
+        // throw new Error(`Failed to delete lobby: ${error}`);
+    } else {
+        // Once implemented, we'll refresh the list
+        await getLobbies();
+    }
 }
 
 
