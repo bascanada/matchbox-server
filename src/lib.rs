@@ -235,17 +235,10 @@ async fn create_lobby_handler(
     Json(payload): Json<CreateLobbyRequest>,
 ) -> impl IntoResponse {
     let mut lobby_manager = state.state.lobby_manager.write().unwrap();
-    let lobby = if payload.whitelist.is_some() {
-        lobby_manager.create_lobby_with_whitelist(payload.is_private, payload.whitelist)
-    } else {
-        lobby_manager.create_lobby(payload.is_private)
-    };
+    // Create lobby and ensure the owner is present atomically
+    let lobby = lobby_manager.create_lobby_with_owner(payload.is_private, claims.sub.clone(), payload.whitelist);
     let mut players_in_lobbies = state.state.players_in_lobbies.write().unwrap();
     players_in_lobbies.insert(claims.sub.clone(), lobby.id);
-    // Ensure the created lobby stored in the manager has the creator added to its players set
-    if let Err(e) = lobby_manager.add_player_to_lobby(&lobby.id, claims.sub.clone()) {
-        tracing::error!(lobby_id = %lobby.id, error = ?e, "Failed to add creator to lobby players set");
-    }
     tracing::info!(lobby_id = %lobby.id, pubkey = %&claims.sub[..8], "Lobby created and player added");
     Json(lobby)
 }
