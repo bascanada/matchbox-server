@@ -21,7 +21,7 @@ pub const CHALLENGE_EXPIRATION: Duration = Duration::from_secs(60);
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Claims {
-    pub sub: String,  // public key
+    pub sub: String, // public key
     pub username: String,
     pub exp: usize,
 }

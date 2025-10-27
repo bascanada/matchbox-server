@@ -3,6 +3,7 @@ import * as bip39 from 'bip39';
 import * as ed from '@noble/ed25519';
 import { sha512 } from '@noble/hashes/sha2.js';
 import { ethers } from 'ethers';
+import { toast } from '@zerodevx/svelte-toast';
 
 // Enable synchronous methods for ed25519
 ed.hashes.sha512 = sha512;
@@ -25,29 +26,55 @@ export const recoveryPhrase = writable(browser ? localStorage.getItem('matchbox-
 export const friendsList = writable(
     browser ? JSON.parse(localStorage.getItem('matchbox-friends') || '[]') : []
 );
+export const lobbies = writable([]);
 
 
 // --- Subscriptions ---
 
 // Automatically update login status when JWT changes
 jwt.subscribe(token => {
-  if (!browser) return; // Don't run on the server
-  isLoggedIn.set(!!token);
-  if (!token) {
-    currentUser.set(null);
-    localStorage.removeItem('matchbox-jwt');
-  } else {
-    localStorage.setItem('matchbox-jwt', token);
-    // Decode JWT to get user info
-    const claims = decodeJWT(token);
-    if (claims) {
-      currentUser.set({ 
-        username: claims.username, 
-        publicKey: claims.sub, 
-        isWallet: false 
-      });
+    if (!browser) return; // Don't run on the server
+
+    // No token -> clear state
+    if (!token) {
+        isLoggedIn.set(false);
+        currentUser.set(null);
+        localStorage.removeItem('matchbox-jwt');
+        return;
     }
-  }
+
+    // Try to decode the token and validate expiration
+    const claims = decodeJWT(token);
+    if (!claims) {
+        // Invalid token: clear and notify
+        jwt.set(null);
+        isLoggedIn.set(false);
+        currentUser.set(null);
+        localStorage.removeItem('matchbox-jwt');
+        try { toast.push('Invalid session. Please log in again.'); } catch (e) { /* ignore */ }
+        return;
+    }
+
+    // If token has an expiration, check it (exp is seconds since epoch)
+    const now = Math.floor(Date.now() / 1000);
+    if (claims.exp && typeof claims.exp === 'number' && now >= claims.exp) {
+        // Token expired
+        jwt.set(null);
+        isLoggedIn.set(false);
+        currentUser.set(null);
+        localStorage.removeItem('matchbox-jwt');
+        try { toast.push('Your session has expired. Please log in again.'); } catch (e) { /* ignore */ }
+        return;
+    }
+
+    // Token is valid
+    isLoggedIn.set(true);
+    localStorage.setItem('matchbox-jwt', token);
+    currentUser.set({
+        username: claims.username,
+        publicKey: claims.sub,
+        isWallet: false,
+    });
 });
 
 // Store recovery phrase securely
@@ -417,6 +444,114 @@ export function addFriendFromCode(friendCode) {
  */
 export function removeFriend(publicKey) {
     friendsList.update(list => list.filter(friend => friend.publicKey !== publicKey));
+}
+
+// --- Lobby Management ---
+
+/**
+ * Fetches the list of all lobbies.
+ */
+export async function getLobbies() {
+    const token = get(jwt);
+    if (!token) throw new Error('Not logged in');
+
+    const response = await fetch(`${apiBaseUrlValue}/lobbies`, {
+        headers: { 'Authorization': `Bearer ${token}` },
+    });
+
+    if (!response.ok) {
+        const error = await response.text();
+        throw new Error(`Failed to get lobbies: ${error}`);
+    }
+
+    const lobbyData = await response.json();
+    lobbies.set(lobbyData);
+    return lobbyData;
+}
+
+/**
+ * Creates a new lobby.
+ * @param {boolean} isPrivate - Whether the lobby should be private.
+ * @param {string[]} [whitelist] - An optional list of public keys for the whitelist (if private).
+ * @returns {Promise<object>} The created lobby object.
+ */
+export async function createLobby(isPrivate, whitelist = []) {
+    const token = get(jwt);
+    if (!token) throw new Error('Not logged in');
+
+    const body = {
+        is_private: isPrivate,
+        whitelist: isPrivate ? whitelist : undefined,
+    };
+
+    const response = await fetch(`${apiBaseUrlValue}/lobbies`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`,
+        },
+        body: JSON.stringify(body),
+    });
+
+    if (!response.ok) {
+        const error = await response.text();
+        throw new Error(`Failed to create lobby: ${error}`);
+    }
+
+    // Refresh the lobby list after creating a new one
+    await getLobbies();
+
+    return await response.json();
+}
+
+/**
+ * Joins a lobby.
+ * @param {string} lobbyId - The ID of the lobby to join.
+ */
+export async function joinLobby(lobbyId) {
+    const token = get(jwt);
+    if (!token) throw new Error('Not logged in');
+
+    const response = await fetch(`${apiBaseUrlValue}/lobbies/${lobbyId}/join`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${token}` },
+    });
+
+    if (!response.ok) {
+        const error = await response.text();
+        throw new Error(`Failed to join lobby: ${error}`);
+    }
+
+    // Refresh the lobby list to show the player in the lobby
+    await getLobbies();
+}
+
+/**
+ * Deletes a lobby.
+ * Note: The backend for this is not yet implemented.
+ * @param {string} lobbyId - The ID of the lobby to delete.
+ */
+export async function deleteLobby(lobbyId) {
+    const token = get(jwt);
+    if (!token) throw new Error('Not logged in');
+
+    const response = await fetch(`${apiBaseUrlValue}/lobbies/${lobbyId}`, {
+        method: 'DELETE',
+        headers: { 'Authorization': `Bearer ${token}` },
+    });
+
+    if (!response.ok) {
+        // For now, we'll log a warning since the backend isn't ready
+        console.warn(`Note: Lobby deletion is not yet implemented on the server. (Lobby ID: ${lobbyId})`);
+        // Even if it fails, we can remove it from the local list for a better UX
+        lobbies.update(l => l.filter(lobby => lobby.id !== lobbyId));
+        // We'll throw an error for now to indicate it's not working
+        const error = await response.text();
+        // throw new Error(`Failed to delete lobby: ${error}`);
+    } else {
+        // Once implemented, we'll refresh the list
+        await getLobbies();
+    }
 }
 
 

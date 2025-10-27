@@ -1,6 +1,7 @@
 <script>
   import MatchboxAuth from '$lib/components/MatchboxAuth.svelte';
   import MatchboxFriendsList from '$lib/components/MatchboxFriendsList.svelte';
+  import MatchboxLobbies from '$lib/components/MatchboxLobbies.svelte';
 </script>
 
 <div class="page-container">
@@ -15,6 +16,7 @@
   <div class="components">
     <MatchboxAuth />
     <MatchboxFriendsList />
+    <MatchboxLobbies />
   </div>
 </div>
 

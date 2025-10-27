@@ -1,4 +1,4 @@
-use futures_util::{SinkExt, StreamExt};
+use futures_util::StreamExt;
 use matchbox_server::helpers;
 use reqwest::Client;
 use serde_json::Value;

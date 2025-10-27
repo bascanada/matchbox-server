@@ -126,6 +126,18 @@ async fn test_public_lobby_flow() {
     let body: Value = response.json().await.unwrap();
     let lobby_id = body["id"].as_str().unwrap();
 
+    // Creator (Player A) should also see the public lobby in the discovery endpoint
+    let response = client
+        .get(format!("http://{}/lobbies", addr))
+        .header("Authorization", format!("Bearer {}", token_a))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status().as_u16(), 200);
+    let body_a: Vec<Value> = response.json().await.unwrap();
+    assert_eq!(body_a.len(), 1);
+    assert_eq!(body_a[0]["id"].as_str().unwrap(), lobby_id);
+
     // --- Player B ---
     // 1. Authenticate
     let response = client
@@ -236,6 +248,228 @@ async fn test_private_lobby_flow() {
     assert_eq!(response.status().as_u16(), 200);
     let body: Vec<Value> = response.json().await.unwrap();
     assert_eq!(body.len(), 0);
+
+    // Creator (Player A) should see their own private lobby
+    let response = client
+        .get(format!("http://{}/lobbies", addr))
+        .header("Authorization", format!("Bearer {}", token_a))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status().as_u16(), 200);
+    let body_owner: Vec<Value> = response.json().await.unwrap();
+    assert_eq!(body_owner.len(), 1);
+}
+
+// Focused test: owner can discover their own private lobby
+#[tokio::test]
+#[serial]
+async fn test_owner_sees_private_lobby_discovery() {
+    let addr = spawn_app().await;
+    let client = Client::new();
+
+    // Authenticate owner
+    let response = client
+        .post(format!("http://{}/auth/challenge", addr))
+        .send()
+        .await
+        .unwrap();
+    let body: Value = response.json().await.unwrap();
+    let challenge = body["challenge"].as_str().unwrap();
+    let login_payload = helpers::generate_login_payload("owner", "pass", challenge).unwrap();
+    let response = client
+        .post(format!("http://{}/auth/login", addr))
+        .header("Content-Type", "application/json")
+        .body(login_payload)
+        .send()
+        .await
+        .unwrap();
+    let body: Value = response.json().await.unwrap();
+    let token = body["token"].as_str().unwrap();
+
+    // Create private lobby that whitelists only the owner
+    let pubkey_owner = helpers::get_public_key("owner", "pass").unwrap();
+    let create_lobby_body = json!({
+        "is_private": true,
+        "whitelist": [pubkey_owner]
+    });
+    let response = client
+        .post(format!("http://{}/lobbies", addr))
+        .header("Authorization", format!("Bearer {}", token))
+        .header("Content-Type", "application/json")
+        .body(create_lobby_body.to_string())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status().as_u16(), 200);
+    let body: Value = response.json().await.unwrap();
+    let lobby_id = body["id"].as_str().unwrap();
+
+    // Owner should see it via discovery
+    let response = client
+        .get(format!("http://{}/lobbies", addr))
+        .header("Authorization", format!("Bearer {}", token))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status().as_u16(), 200);
+    let lobbies: Vec<Value> = response.json().await.unwrap();
+    assert!(!lobbies.is_empty());
+
+    // Create another user (intruder) who should NOT see or join the private lobby
+    let response = client
+        .post(format!("http://{}/auth/challenge", addr))
+        .send()
+        .await
+        .unwrap();
+    let body: Value = response.json().await.unwrap();
+    let challenge_intruder = body["challenge"].as_str().unwrap();
+    let login_payload_intruder =
+        helpers::generate_login_payload("intruder", "pass", challenge_intruder).unwrap();
+    let response = client
+        .post(format!("http://{}/auth/login", addr))
+        .header("Content-Type", "application/json")
+        .body(login_payload_intruder)
+        .send()
+        .await
+        .unwrap();
+    let body: Value = response.json().await.unwrap();
+    let token_intruder = body["token"].as_str().unwrap();
+
+    // Intruder should not see the private lobby
+    let response = client
+        .get(format!("http://{}/lobbies", addr))
+        .header("Authorization", format!("Bearer {}", token_intruder))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status().as_u16(), 200);
+    let intruder_lobbies: Vec<Value> = response.json().await.unwrap();
+    assert_eq!(intruder_lobbies.len(), 0);
+
+    // Intruder should not be able to join
+    let response = client
+        .post(format!("http://{}/lobbies/{}/join", addr, lobby_id))
+        .header("Authorization", format!("Bearer {}", token_intruder))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status().as_u16(), 403);
+}
+
+// Focused test: whitelisted player sees private lobby in discovery
+#[tokio::test]
+#[serial]
+async fn test_whitelisted_player_discovery() {
+    let addr = spawn_app().await;
+    let client = Client::new();
+
+    // Player A (host)
+    let response = client
+        .post(format!("http://{}/auth/challenge", addr))
+        .send()
+        .await
+        .unwrap();
+    let body: Value = response.json().await.unwrap();
+    let challenge_a = body["challenge"].as_str().unwrap();
+    let login_payload_a = helpers::generate_login_payload("host", "pass", challenge_a).unwrap();
+    let response = client
+        .post(format!("http://{}/auth/login", addr))
+        .header("Content-Type", "application/json")
+        .body(login_payload_a)
+        .send()
+        .await
+        .unwrap();
+    let body: Value = response.json().await.unwrap();
+    let token_a = body["token"].as_str().unwrap();
+
+    // Player B (guest)
+    let response = client
+        .post(format!("http://{}/auth/challenge", addr))
+        .send()
+        .await
+        .unwrap();
+    let body: Value = response.json().await.unwrap();
+    let challenge_b = body["challenge"].as_str().unwrap();
+    let login_payload_b = helpers::generate_login_payload("guest", "pass", challenge_b).unwrap();
+    let response = client
+        .post(format!("http://{}/auth/login", addr))
+        .header("Content-Type", "application/json")
+        .body(login_payload_b)
+        .send()
+        .await
+        .unwrap();
+    let body: Value = response.json().await.unwrap();
+    let token_b = body["token"].as_str().unwrap();
+
+    let pubkey_b = helpers::get_public_key("guest", "pass").unwrap();
+
+    // Host creates a private lobby whitelisting guest
+    let create_lobby_body = json!({
+        "is_private": true,
+        "whitelist": [pubkey_b]
+    });
+    let response = client
+        .post(format!("http://{}/lobbies", addr))
+        .header("Authorization", format!("Bearer {}", token_a))
+        .header("Content-Type", "application/json")
+        .body(create_lobby_body.to_string())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status().as_u16(), 200);
+
+    // Guest should see the private lobby in discovery
+    let response = client
+        .get(format!("http://{}/lobbies", addr))
+        .header("Authorization", format!("Bearer {}", token_b))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status().as_u16(), 200);
+    let body_b: Vec<Value> = response.json().await.unwrap();
+    assert_eq!(body_b.len(), 1);
+    let lobby_id = body_b[0]["id"].as_str().unwrap();
+
+    // Now create a non-whitelisted user and assert they cannot see or join
+    let response = client
+        .post(format!("http://{}/auth/challenge", addr))
+        .send()
+        .await
+        .unwrap();
+    let body: Value = response.json().await.unwrap();
+    let challenge_other = body["challenge"].as_str().unwrap();
+    let login_payload_other =
+        helpers::generate_login_payload("other", "pass", challenge_other).unwrap();
+    let response = client
+        .post(format!("http://{}/auth/login", addr))
+        .header("Content-Type", "application/json")
+        .body(login_payload_other)
+        .send()
+        .await
+        .unwrap();
+    let body: Value = response.json().await.unwrap();
+    let token_other = body["token"].as_str().unwrap();
+
+    // Other should not see the private lobby
+    let response = client
+        .get(format!("http://{}/lobbies", addr))
+        .header("Authorization", format!("Bearer {}", token_other))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status().as_u16(), 200);
+    let other_lobbies: Vec<Value> = response.json().await.unwrap();
+    assert_eq!(other_lobbies.len(), 0);
+
+    // Other should not be able to join
+    let response = client
+        .post(format!("http://{}/lobbies/{}/join", addr, lobby_id))
+        .header("Authorization", format!("Bearer {}", token_other))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status().as_u16(), 403);
 }
 
 #[tokio::test]
@@ -305,6 +539,18 @@ async fn test_whitelist_allows_whitelisted_player() {
     assert_eq!(response.status().as_u16(), 200);
     let body: Value = response.json().await.unwrap();
     let lobby_id = body["id"].as_str().unwrap();
+
+    // Player B (whitelisted) should be able to discover the private lobby
+    let response = client
+        .get(format!("http://{}/lobbies", addr))
+        .header("Authorization", format!("Bearer {}", token_b))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status().as_u16(), 200);
+    let body_b: Vec<Value> = response.json().await.unwrap();
+    assert_eq!(body_b.len(), 1);
+    assert_eq!(body_b[0]["id"].as_str().unwrap(), lobby_id);
 
     // 3. Player B should be able to join (they're whitelisted)
     let response = client

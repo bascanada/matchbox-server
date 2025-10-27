@@ -54,14 +54,21 @@ impl LobbyManager {
         Default::default()
     }
 
-    pub fn create_lobby(&mut self, is_private: bool) -> Lobby {
-        let lobby = Lobby {
+    /// Create a lobby and add an initial owner/creator into the players set atomically.
+    pub fn create_lobby_with_owner(
+        &mut self,
+        is_private: bool,
+        owner: String,
+        whitelist: Option<Vec<String>>,
+    ) -> Lobby {
+        let mut lobby = Lobby {
             id: Uuid::new_v4(),
             players: Default::default(),
             status: crate::lobby::LobbyStatus::Waiting,
             is_private,
-            whitelist: None,
+            whitelist: whitelist.map(|w| w.into_iter().collect()),
         };
+        lobby.players.insert(owner);
         self.lobbies.insert(lobby.id, lobby.clone());
         lobby
     }
@@ -94,6 +101,12 @@ impl LobbyManager {
                 if !lobby.is_private && lobby.status == crate::lobby::LobbyStatus::Waiting {
                     return true;
                 }
+                // If the player is already in the lobby (e.g., the creator), always show it to them
+                if let Some(ref pk) = player_pubkey {
+                    if lobby.players.contains(pk) {
+                        return true;
+                    }
+                }
                 // If lobby is private and has a whitelist, only show if player is whitelisted
                 if lobby.is_private {
                     if let Some(whitelist) = &lobby.whitelist {
@@ -125,6 +138,9 @@ impl LobbyManager {
             lobby.players.insert(player_id);
             Ok(())
         } else {
+            // Log available lobbies for debugging when a lobby is unexpectedly missing
+            let ids: Vec<String> = self.lobbies.keys().map(|u| u.to_string()).collect();
+            tracing::debug!(?ids, ?lobby_id, "add_player_to_lobby: lobby not found");
             Err(SignalingError::UnknownPeer)
         }
     }
