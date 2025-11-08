@@ -1015,7 +1015,7 @@ async fn test_delete_lobby_with_multiple_players() {
     let lobbies_b: Vec<Value> = response.json().await.unwrap();
     assert_eq!(lobbies_b.len(), 1);
 
-    // Delete the lobby (either player can delete it)
+    // The owner (Player A) deletes the lobby
     let response = client
         .delete(format!("http://{}/lobbies/{}", addr, lobby_id))
         .header("Authorization", format!("Bearer {}", token_a))
