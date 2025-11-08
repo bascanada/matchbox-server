@@ -18,6 +18,7 @@ pub enum LobbyStatus {
 #[derive(Debug, Clone, Serialize)]
 pub struct Lobby {
     pub id: Uuid,
+    pub owner: PlayerId,
     pub players: HashSet<PlayerId>,
     pub status: LobbyStatus,
     pub is_private: bool,

@@ -63,6 +63,7 @@ impl LobbyManager {
     ) -> Lobby {
         let mut lobby = Lobby {
             id: Uuid::new_v4(),
+            owner: owner.clone(),
             players: Default::default(),
             status: crate::lobby::LobbyStatus::Waiting,
             is_private,
@@ -76,10 +77,12 @@ impl LobbyManager {
     pub fn create_lobby_with_whitelist(
         &mut self,
         is_private: bool,
+        owner: String,
         whitelist: Option<Vec<String>>,
     ) -> Lobby {
         let lobby = Lobby {
             id: Uuid::new_v4(),
+            owner,
             players: Default::default(),
             status: crate::lobby::LobbyStatus::Waiting,
             is_private,
@@ -148,6 +151,49 @@ impl LobbyManager {
     pub fn remove_player_from_lobby(&mut self, lobby_id: &Uuid, player_id: &String) {
         if let Some(lobby) = self.lobbies.get_mut(lobby_id) {
             lobby.players.remove(player_id);
+        }
+    }
+
+    pub fn delete_lobby(&mut self, lobby_id: &Uuid) -> Result<(), SignalingError> {
+        if self.lobbies.remove(lobby_id).is_some() {
+            Ok(())
+        } else {
+            Err(SignalingError::UnknownPeer)
+        }
+    }
+
+    pub fn add_to_whitelist(
+        &mut self,
+        lobby_id: &Uuid,
+        player_ids: Vec<String>,
+    ) -> Result<(), SignalingError> {
+        if let Some(lobby) = self.lobbies.get_mut(lobby_id) {
+            if let Some(whitelist) = &mut lobby.whitelist {
+                for player_id in player_ids {
+                    whitelist.insert(player_id);
+                }
+            } else {
+                // Create whitelist if it doesn't exist
+                lobby.whitelist = Some(player_ids.into_iter().collect());
+            }
+            Ok(())
+        } else {
+            Err(SignalingError::UnknownPeer)
+        }
+    }
+
+    pub fn remove_from_whitelist(
+        &mut self,
+        lobby_id: &Uuid,
+        player_id: &String,
+    ) -> Result<(), SignalingError> {
+        if let Some(lobby) = self.lobbies.get_mut(lobby_id) {
+            if let Some(whitelist) = &mut lobby.whitelist {
+                whitelist.remove(player_id);
+            }
+            Ok(())
+        } else {
+            Err(SignalingError::UnknownPeer)
         }
     }
 }
