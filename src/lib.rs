@@ -308,18 +308,30 @@ async fn join_lobby_handler(
     let result = lobby_manager.add_player_to_lobby(&lobby_id, claims.sub.clone());
 
     if result.is_err() {
-        // Check if it's a whitelist rejection
-        let lobby = lobby_manager.get_lobby(&lobby_id);
-        if let Some(lobby) = lobby {
+        // Determine reason: lobby missing, not whitelisted, or lobby already started
+        let lobby_opt = lobby_manager.get_lobby(&lobby_id);
+        if let Some(lobby) = lobby_opt {
+            // If lobby exists but is not in Waiting state, it's already in progress
+            if lobby.status != crate::lobby::LobbyStatus::Waiting {
+                tracing::warn!(lobby_id = %lobby_id, pubkey = %&claims.sub[..8], "Player attempted to join lobby already in progress");
+                return (StatusCode::CONFLICT, "Game already started").into_response();
+            }
+
+            // Check whitelist rejection
             if let Some(whitelist) = &lobby.whitelist {
                 if !whitelist.contains(&claims.sub) {
                     tracing::warn!(lobby_id = %lobby_id, pubkey = %&claims.sub[..8], "Player not in whitelist");
                     return (StatusCode::FORBIDDEN, "Not in whitelist").into_response();
                 }
             }
+
+            // If we get here, the add failed for an unknown reason — return not found as fallback
+            tracing::warn!(lobby_id = %lobby_id, pubkey = %&claims.sub[..8], "Player failed to join lobby: unknown error");
+            return (StatusCode::NOT_FOUND, "Lobby not found").into_response();
+        } else {
+            tracing::warn!(lobby_id = %lobby_id, pubkey = %&claims.sub[..8], "Player failed to join lobby: not found");
+            return (StatusCode::NOT_FOUND, "Lobby not found").into_response();
         }
-        tracing::warn!(lobby_id = %lobby_id, pubkey = %&claims.sub[..8], "Player failed to join lobby: not found");
-        return (StatusCode::NOT_FOUND, "Lobby not found").into_response();
     }
 
     // Insert the joining player's public key into players_in_lobbies

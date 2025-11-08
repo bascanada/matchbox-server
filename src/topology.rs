@@ -59,6 +59,24 @@ impl SignalingTopology<NoCallbacks, ServerState> for MatchmakingDemoTopology {
             }
         };
 
+        // If this connecting player is the lobby owner, mark the lobby as InProgress so no new joins are allowed.
+        // We use the read lock to peek at the lobby and then a write lock to perform the transition.
+        let maybe_lobby = {
+            let lobby_manager = state.lobby_manager.read().unwrap();
+            lobby_manager.get_lobby(&lobby_id)
+        };
+        if let Some(lobby) = maybe_lobby {
+            if lobby.owner == player_id {
+                // Owner is connecting — start the lobby
+                let mut lobby_manager = state.lobby_manager.write().unwrap();
+                if let Err(e) = lobby_manager.start_lobby(&lobby_id, &player_id) {
+                    warn!(peer = ?peer_id, error = ?e, "Failed to start lobby on owner connect");
+                } else {
+                    info!(peer = ?peer_id, lobby_id = %lobby_id, "Owner connected — lobby marked InProgress");
+                }
+            }
+        }
+
         let peer = Peer {
             id: peer_id,
             sender: sender.clone(),
@@ -122,19 +140,29 @@ impl SignalingTopology<NoCallbacks, ServerState> for MatchmakingDemoTopology {
             }
         }
 
-        info!("Removing peer: {:?}", peer_id);
-        state.remove_peer(&peer_id);
-        {
-            let mut players_in_lobbies = state.players_in_lobbies.write().unwrap();
-            players_in_lobbies.remove(&player_id);
-        }
-        {
-            let mut players_to_peers = state.players_to_peers.write().unwrap();
-            players_to_peers.remove(&player_id);
-        }
-        {
+        info!("Removing connection for peer: {:?}", peer_id);
+        // Remove only the peer/connection and players_to_peers mapping, but KEEP the player's
+        // membership in the lobby so they can be re-used in the next game.
+        state.remove_connection_only(&peer_id, &player_id);
+
+        // Check if any players in this lobby still have active connections (players_to_peers)
+        let any_connected = {
+            let players_to_peers = state.players_to_peers.read().unwrap();
+            let lobby_players = {
+                let lobby_manager = state.lobby_manager.read().unwrap();
+                lobby_manager.get_lobby(&lobby_id).map(|l| l.players).unwrap_or_default()
+            };
+            lobby_players.iter().any(|p| players_to_peers.contains_key(p))
+        };
+
+        if !any_connected {
+            // No players connected anymore — end the game and return lobby to Waiting state
             let mut lobby_manager = state.lobby_manager.write().unwrap();
-            lobby_manager.remove_player_from_lobby(&lobby_id, &player_id);
+            if let Err(e) = lobby_manager.end_lobby(&lobby_id) {
+                warn!(peer = ?peer_id, error = ?e, "Failed to end lobby when last player disconnected");
+            } else {
+                info!(lobby_id = %lobby_id, "All players disconnected — lobby returned to Waiting");
+            }
         }
 
         let players = {

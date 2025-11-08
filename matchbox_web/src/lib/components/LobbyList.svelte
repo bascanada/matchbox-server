@@ -192,6 +192,7 @@
                 <tr>
                     <th>Privacy</th>
                     <th>Lobby ID</th>
+                    <th>State</th>
                     <th>Players ({$lobbies.reduce((sum, l) => sum + l.players.length, 0)})</th>
                     <th>Actions</th>
                 </tr>
@@ -202,6 +203,11 @@
                         <td>
                             <span class="privacy-badge" class:private={lobby.is_private}>
                                 {lobby.is_private ? '🔒 Private' : '🌐 Public'}
+                            </span>
+                        </td>
+                        <td>
+                            <span class="lobby-state" class:inprogress={lobby.status === 'InProgress'}>
+                                {lobby.status === 'InProgress' ? 'In Progress' : 'Waiting'}
                             </span>
                         </td>
                         <td>
@@ -220,25 +226,32 @@
                         </td>
                         <td class="actions">
                             {#if !isUserInLobby(lobby)}
-                                <button class="join-btn" on:click={() => handleJoin(lobby)}>
-                                    Join
-                                </button>
+                                {#if lobby.status === 'InProgress'}
+                                    <button class="join-btn" disabled title="Game already started">
+                                        In Progress
+                                    </button>
+                                {:else}
+                                    <button class="join-btn" on:click={() => handleJoin(lobby)}>
+                                        Join
+                                    </button>
+                                {/if}
                             {:else}
                                 <div class="action-buttons">
+                                    {#if onJoinLobby}
+                                        <button class="join-btn" on:click={() => handleJoin(lobby)}>
+                                            Start Game
+                                        </button>
+                                    {/if}
+
                                     {#if lobby.owner === $currentUser?.publicKey}
-                                            {#if onJoinLobby && lobby.owner === $currentUser?.publicKey}
-                                                <button class="join-btn" on:click={() => handleJoin(lobby)}>
-                                                    Start Game
-                                                </button>
-                                            {/if}
-                                            {#if lobby.is_private && getInvitableFriends(lobby).length > 0}
-                                                <button class="invite-btn" on:click={() => openInviteModal(lobby)}>
-                                                    ➕ Invite
-                                                </button>
-                                            {/if}
-                                            <button class="delete-btn" on:click={() => handleDelete(lobby.id)}>
-                                                🗑️ Delete
+                                        {#if lobby.is_private && getInvitableFriends(lobby).length > 0}
+                                            <button class="invite-btn" on:click={() => openInviteModal(lobby)}>
+                                                ➕ Invite
                                             </button>
+                                        {/if}
+                                        <button class="delete-btn" on:click={() => handleDelete(lobby.id)}>
+                                            🗑️ Delete
+                                        </button>
                                     {:else}
                                         <button class="leave-btn" on:click={() => handleDelete(lobby.id)}>
                                             🚪 Leave

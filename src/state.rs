@@ -132,6 +132,11 @@ impl LobbyManager {
         player_id: String,
     ) -> Result<(), SignalingError> {
         if let Some(lobby) = self.lobbies.get_mut(lobby_id) {
+            // Prevent joining if the lobby has already started
+            if lobby.status != crate::lobby::LobbyStatus::Waiting {
+                tracing::warn!(lobby_id = %lobby_id, pubkey = %player_id, "Attempt to join lobby that is not waiting");
+                return Err(SignalingError::UnknownPeer);
+            }
             // Check whitelist if it exists
             if let Some(whitelist) = &lobby.whitelist {
                 if !whitelist.contains(&player_id) {
@@ -144,6 +149,40 @@ impl LobbyManager {
             // Log available lobbies for debugging when a lobby is unexpectedly missing
             let ids: Vec<String> = self.lobbies.keys().map(|u| u.to_string()).collect();
             tracing::debug!(?ids, ?lobby_id, "add_player_to_lobby: lobby not found");
+            Err(SignalingError::UnknownPeer)
+        }
+    }
+
+    /// Mark a lobby as started (InProgress). Only the owner may start the lobby.
+    pub fn start_lobby(&mut self, lobby_id: &Uuid, owner_id: &String) -> Result<(), SignalingError> {
+        if let Some(lobby) = self.lobbies.get_mut(lobby_id) {
+            if &lobby.owner != owner_id {
+                tracing::warn!(lobby_id = %lobby_id, owner = %owner_id, "Non-owner attempted to start lobby");
+                return Err(SignalingError::UnknownPeer);
+            }
+            if lobby.status != crate::lobby::LobbyStatus::Waiting {
+                tracing::debug!(lobby_id = %lobby_id, "Lobby already started");
+                return Ok(());
+            }
+            lobby.status = crate::lobby::LobbyStatus::InProgress;
+            tracing::info!(lobby_id = %lobby_id, "Lobby status set to InProgress");
+            Ok(())
+        } else {
+            Err(SignalingError::UnknownPeer)
+        }
+    }
+
+    /// Mark a lobby as finished and return it to Waiting state so it can be reused.
+    pub fn end_lobby(&mut self, lobby_id: &Uuid) -> Result<(), SignalingError> {
+        if let Some(lobby) = self.lobbies.get_mut(lobby_id) {
+            if lobby.status == crate::lobby::LobbyStatus::Waiting {
+                tracing::debug!(lobby_id = %lobby_id, "end_lobby: lobby already Waiting");
+                return Ok(());
+            }
+            lobby.status = crate::lobby::LobbyStatus::Waiting;
+            tracing::info!(lobby_id = %lobby_id, "Lobby status set to Waiting");
+            Ok(())
+        } else {
             Err(SignalingError::UnknownPeer)
         }
     }
@@ -229,5 +268,19 @@ impl ServerState {
             Some(peer) => Ok(common_logic::try_send(&peer.sender, message)?),
             None => Err(SignalingError::UnknownPeer),
         }
+    }
+}
+
+impl ServerState {
+    /// Remove only the connection/peer and players_to_peers mapping for a player
+    /// without removing their lobby membership. This is used when a websocket
+    /// disconnects but we want to keep the player assigned to the lobby so they
+    /// can rejoin a future game.
+    pub fn remove_connection_only(&self, peer_id: &PeerId, player_id: &str) {
+        // Remove from peers by PeerId
+        self.peers.lock().unwrap().remove(peer_id);
+        // Remove from players_to_peers mapping
+        self.players_to_peers.write().unwrap().remove(player_id);
+        tracing::info!(peer_id = ?peer_id, pubkey = %&player_id[..8], "Removed connection for player (kept lobby membership)");
     }
 }
