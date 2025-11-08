@@ -28,7 +28,7 @@ onJoinLobby({ lobbyId, token, players, isPrivate })
 
 ```svelte
 <script>
-  import { MatchboxLobbiesComponent } from './matchbox-web';
+  import MatchboxLobbies from '$lib/components/MatchboxLobbies.svelte';
 
   function handleJoinLobby({ lobbyId, token, players, isPrivate }) {
     console.log('Starting game with:', { lobbyId, token, players, isPrivate });
