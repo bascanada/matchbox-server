@@ -2,6 +2,45 @@
   import MatchboxAuth from '$lib/components/MatchboxAuth.svelte';
   import MatchboxFriendsList from '$lib/components/MatchboxFriendsList.svelte';
   import MatchboxLobbies from '$lib/components/MatchboxLobbies.svelte';
+  import { toast } from '@zerodevx/svelte-toast';
+
+  // Clipboard helper with fallback for environments where navigator.clipboard isn't available
+  async function copyToClipboard(text) {
+    if (!text) throw new Error('No token provided');
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        // Preferred modern API - requires secure context (https or localhost)
+        await navigator.clipboard.writeText(text);
+        return;
+      }
+
+      // Fallback: show a prompt with the token so the user can copy manually.
+      // This avoids using the deprecated document.execCommand('copy').
+      const manual = window.prompt('Copy the token below (Ctrl/Cmd+C + Enter):', text);
+      if (manual === null) {
+        throw new Error('Manual copy cancelled');
+      }
+    } catch (err) {
+      throw new Error('Copy failed: ' + (err?.message || err));
+    }
+  }
+
+  // onJoinLobby callback: receives { lobbyId, token, players, isPrivate }
+  async function handleStartFromLobby({ lobbyId, token, players, isPrivate }) {
+    try {
+      if (!token) {
+        toast.push('No token available; please log in.');
+        return;
+      }
+      await copyToClipboard(token);
+      toast.push('Token copied to clipboard — ready to start.');
+      console.log('Start game', { lobbyId, players, isPrivate });
+      // TODO: add game start integration here (open client, websocket connect, etc.)
+    } catch (err) {
+      toast.push(err.message || 'Failed to process start');
+      console.error(err);
+    }
+  }
 </script>
 
 <div class="page-container">
@@ -16,7 +55,7 @@
   <div class="components">
     <MatchboxAuth />
     <MatchboxFriendsList />
-    <MatchboxLobbies />
+    <MatchboxLobbies onJoinLobby={handleStartFromLobby} />
   </div>
 </div>
 

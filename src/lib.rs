@@ -11,7 +11,7 @@ use axum::{
     extract::{FromRef, Path, State},
     http::StatusCode,
     response::{IntoResponse, Json},
-    routing::{get, post},
+    routing::{get, post, delete},
     Router,
 };
 use jsonwebtoken::{decode, DecodingKey, Validation};
@@ -141,6 +141,8 @@ fn app(state: AppState) -> Router {
             post(create_lobby_handler).get(list_lobbies_handler),
         )
         .route("/lobbies/:lobby_id/join", post(join_lobby_handler))
+        .route("/lobbies/:lobby_id", delete(delete_lobby_handler))
+        .route("/lobbies/:lobby_id/invite", post(invite_to_lobby_handler))
         // TODO: Restrict CORS for production environments
         .layer(CorsLayer::very_permissive())
         .with_state(state)
@@ -234,13 +236,25 @@ async fn create_lobby_handler(
     claims: auth::Claims,
     Json(payload): Json<CreateLobbyRequest>,
 ) -> impl IntoResponse {
+    // Check if player is already in a lobby
+    let players_in_lobbies = state.state.players_in_lobbies.read().unwrap();
+    if let Some(existing_lobby_id) = players_in_lobbies.get(&claims.sub) {
+        tracing::warn!(
+            existing_lobby_id = %existing_lobby_id,
+            pubkey = %&claims.sub[..8],
+            "Player attempted to create lobby while already in one"
+        );
+        return (StatusCode::CONFLICT, "Already in a lobby").into_response();
+    }
+    drop(players_in_lobbies);
+
     let mut lobby_manager = state.state.lobby_manager.write().unwrap();
     // Create lobby and ensure the owner is present atomically
     let lobby = lobby_manager.create_lobby_with_owner(payload.is_private, claims.sub.clone(), payload.whitelist);
     let mut players_in_lobbies = state.state.players_in_lobbies.write().unwrap();
     players_in_lobbies.insert(claims.sub.clone(), lobby.id);
     tracing::info!(lobby_id = %lobby.id, pubkey = %&claims.sub[..8], "Lobby created and player added");
-    Json(lobby)
+    Json(lobby).into_response()
 }
 
 async fn list_lobbies_handler(
@@ -272,22 +286,52 @@ async fn join_lobby_handler(
     Path(lobby_id): Path<uuid::Uuid>,
     claims: auth::Claims,
 ) -> impl IntoResponse {
+    // Check if player is already in a lobby
+    let players_in_lobbies = state.state.players_in_lobbies.read().unwrap();
+    if let Some(existing_lobby_id) = players_in_lobbies.get(&claims.sub) {
+        // Allow rejoining the same lobby (idempotent operation)
+        if *existing_lobby_id == lobby_id {
+            tracing::debug!(lobby_id = %lobby_id, pubkey = %&claims.sub[..8], "Player already in this lobby");
+            return StatusCode::OK.into_response();
+        }
+        tracing::warn!(
+            existing_lobby_id = %existing_lobby_id,
+            attempted_lobby_id = %lobby_id,
+            pubkey = %&claims.sub[..8],
+            "Player attempted to join lobby while already in another"
+        );
+        return (StatusCode::CONFLICT, "Already in a lobby").into_response();
+    }
+    drop(players_in_lobbies);
+
     let mut lobby_manager = state.state.lobby_manager.write().unwrap();
     let result = lobby_manager.add_player_to_lobby(&lobby_id, claims.sub.clone());
 
     if result.is_err() {
-        // Check if it's a whitelist rejection
-        let lobby = lobby_manager.get_lobby(&lobby_id);
-        if let Some(lobby) = lobby {
+        // Determine reason: lobby missing, not whitelisted, or lobby already started
+        let lobby_opt = lobby_manager.get_lobby(&lobby_id);
+        if let Some(lobby) = lobby_opt {
+            // If lobby exists but is not in Waiting state, it's already in progress
+            if lobby.status != crate::lobby::LobbyStatus::Waiting {
+                tracing::warn!(lobby_id = %lobby_id, pubkey = %&claims.sub[..8], "Player attempted to join lobby already in progress");
+                return (StatusCode::CONFLICT, "Game already started").into_response();
+            }
+
+            // Check whitelist rejection
             if let Some(whitelist) = &lobby.whitelist {
                 if !whitelist.contains(&claims.sub) {
                     tracing::warn!(lobby_id = %lobby_id, pubkey = %&claims.sub[..8], "Player not in whitelist");
                     return (StatusCode::FORBIDDEN, "Not in whitelist").into_response();
                 }
             }
+
+            // If we get here, the add failed for an unknown reason — return not found as fallback
+            tracing::warn!(lobby_id = %lobby_id, pubkey = %&claims.sub[..8], "Player failed to join lobby: unknown error");
+            return (StatusCode::NOT_FOUND, "Lobby not found").into_response();
+        } else {
+            tracing::warn!(lobby_id = %lobby_id, pubkey = %&claims.sub[..8], "Player failed to join lobby: not found");
+            return (StatusCode::NOT_FOUND, "Lobby not found").into_response();
         }
-        tracing::warn!(lobby_id = %lobby_id, pubkey = %&claims.sub[..8], "Player failed to join lobby: not found");
-        return (StatusCode::NOT_FOUND, "Lobby not found").into_response();
     }
 
     // Insert the joining player's public key into players_in_lobbies
@@ -297,4 +341,103 @@ async fn join_lobby_handler(
     tracing::debug!(players_in_lobbies = ?*players_in_lobbies, "Current players_in_lobbies map");
     tracing::info!(lobby_id = %lobby_id, pubkey = %&claims.sub[..8], "Player joined lobby");
     StatusCode::OK.into_response()
+}
+
+async fn delete_lobby_handler(
+    State(state): State<AppState>,
+    Path(lobby_id): Path<uuid::Uuid>,
+    claims: auth::Claims,
+) -> impl IntoResponse {
+    let mut lobby_manager = state.state.lobby_manager.write().unwrap();
+    
+    // Check if lobby exists
+    let lobby = lobby_manager.get_lobby(&lobby_id);
+    let lobby = match lobby {
+        Some(l) => l,
+        None => {
+            tracing::warn!(lobby_id = %lobby_id, pubkey = %&claims.sub[..8], "Attempted to delete/leave non-existent lobby");
+            return (StatusCode::NOT_FOUND, "Lobby not found").into_response();
+        }
+    };
+    
+    let is_owner = lobby.owner == claims.sub;
+    
+    if is_owner {
+        // Owner is deleting the lobby - remove it completely
+        match lobby_manager.delete_lobby(&lobby_id) {
+            Ok(_) => {
+                // Remove all players from players_in_lobbies that were in this lobby
+                let mut players_in_lobbies = state.state.players_in_lobbies.write().unwrap();
+                players_in_lobbies.retain(|_, lid| *lid != lobby_id);
+                
+                tracing::info!(lobby_id = %lobby_id, pubkey = %&claims.sub[..8], "Lobby deleted by owner");
+                
+                // TODO: Close all WebSocket connections for players in this lobby
+                // This would require tracking peer connections by lobby
+                
+                StatusCode::OK.into_response()
+            }
+            Err(_) => {
+                tracing::error!(lobby_id = %lobby_id, pubkey = %&claims.sub[..8], "Failed to delete lobby");
+                (StatusCode::INTERNAL_SERVER_ERROR, "Failed to delete lobby").into_response()
+            }
+        }
+    } else {
+        // Non-owner is leaving the lobby - just remove them
+        lobby_manager.remove_player_from_lobby(&lobby_id, &claims.sub);
+        
+        // Remove player from players_in_lobbies
+        let mut players_in_lobbies = state.state.players_in_lobbies.write().unwrap();
+        players_in_lobbies.remove(&claims.sub);
+        
+        tracing::info!(lobby_id = %lobby_id, pubkey = %&claims.sub[..8], "Player left lobby");
+        StatusCode::OK.into_response()
+    }
+}
+
+#[derive(Deserialize)]
+pub struct InviteToLobbyRequest {
+    player_public_keys: Vec<String>,
+}
+
+async fn invite_to_lobby_handler(
+    State(state): State<AppState>,
+    Path(lobby_id): Path<uuid::Uuid>,
+    claims: auth::Claims,
+    Json(payload): Json<InviteToLobbyRequest>,
+) -> impl IntoResponse {
+    let mut lobby_manager = state.state.lobby_manager.write().unwrap();
+    
+    // Check if lobby exists
+    let lobby = lobby_manager.get_lobby(&lobby_id);
+    let lobby = match lobby {
+        Some(l) => l,
+        None => {
+            tracing::warn!(lobby_id = %lobby_id, pubkey = %&claims.sub[..8], "Attempted to invite to non-existent lobby");
+            return (StatusCode::NOT_FOUND, "Lobby not found").into_response();
+        }
+    };
+    
+    // Only owner can invite
+    if lobby.owner != claims.sub {
+        tracing::warn!(lobby_id = %lobby_id, pubkey = %&claims.sub[..8], "Non-owner attempted to invite players");
+        return (StatusCode::FORBIDDEN, "Only lobby owner can invite players").into_response();
+    }
+    
+    // Add players to whitelist
+    match lobby_manager.add_to_whitelist(&lobby_id, payload.player_public_keys.clone()) {
+        Ok(_) => {
+            tracing::info!(
+                lobby_id = %lobby_id,
+                pubkey = %&claims.sub[..8],
+                invited_count = payload.player_public_keys.len(),
+                "Players invited to lobby"
+            );
+            Json(json!({ "success": true, "invited": payload.player_public_keys })).into_response()
+        }
+        Err(_) => {
+            tracing::error!(lobby_id = %lobby_id, pubkey = %&claims.sub[..8], "Failed to invite players");
+            (StatusCode::INTERNAL_SERVER_ERROR, "Failed to invite players").into_response()
+        }
+    }
 }

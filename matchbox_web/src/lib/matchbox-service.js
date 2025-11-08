@@ -527,9 +527,8 @@ export async function joinLobby(lobbyId) {
 }
 
 /**
- * Deletes a lobby.
- * Note: The backend for this is not yet implemented.
- * @param {string} lobbyId - The ID of the lobby to delete.
+ * Deletes a lobby (if owner) or leaves it (if member).
+ * @param {string} lobbyId - The ID of the lobby to delete/leave.
  */
 export async function deleteLobby(lobbyId) {
     const token = get(jwt);
@@ -541,17 +540,44 @@ export async function deleteLobby(lobbyId) {
     });
 
     if (!response.ok) {
-        // For now, we'll log a warning since the backend isn't ready
-        console.warn(`Note: Lobby deletion is not yet implemented on the server. (Lobby ID: ${lobbyId})`);
-        // Even if it fails, we can remove it from the local list for a better UX
-        lobbies.update(l => l.filter(lobby => lobby.id !== lobbyId));
-        // We'll throw an error for now to indicate it's not working
         const error = await response.text();
-        // throw new Error(`Failed to delete lobby: ${error}`);
-    } else {
-        // Once implemented, we'll refresh the list
-        await getLobbies();
+        throw new Error(`Failed to delete/leave lobby: ${error}`);
     }
+
+    // Refresh the lobby list
+    await getLobbies();
+}
+
+/**
+ * Invites players to a private lobby by adding them to the whitelist.
+ * Only the lobby owner can invite players.
+ * @param {string} lobbyId - The ID of the lobby.
+ * @param {string[]} playerPublicKeys - Array of public keys to invite.
+ */
+export async function inviteToLobby(lobbyId, playerPublicKeys) {
+    const token = get(jwt);
+    if (!token) throw new Error('Not logged in');
+
+    const response = await fetch(`${apiBaseUrlValue}/lobbies/${lobbyId}/invite`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+            player_public_keys: playerPublicKeys,
+        }),
+    });
+
+    if (!response.ok) {
+        const error = await response.text();
+        throw new Error(`Failed to invite players: ${error}`);
+    }
+
+    // Refresh the lobby list to show updated whitelist
+    await getLobbies();
+    
+    return await response.json();
 }
 
 

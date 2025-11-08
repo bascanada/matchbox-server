@@ -844,3 +844,767 @@ async fn test_lobby_without_whitelist_allows_all_players() {
         .unwrap();
     assert_eq!(response.status().as_u16(), 200);
 }
+
+#[tokio::test]
+#[serial]
+async fn test_delete_lobby() {
+    let addr = spawn_app().await;
+    let client = Client::new();
+
+    // --- Player A (Host) ---
+    let response = client
+        .post(format!("http://{}/auth/challenge", addr))
+        .send()
+        .await
+        .unwrap();
+    let body: Value = response.json().await.unwrap();
+    let challenge_a = body["challenge"].as_str().unwrap();
+    let login_payload_a =
+        helpers::generate_login_payload("player_a", "pass_a", challenge_a).unwrap();
+    let response = client
+        .post(format!("http://{}/auth/login", addr))
+        .header("Content-Type", "application/json")
+        .body(login_payload_a)
+        .send()
+        .await
+        .unwrap();
+    let body: Value = response.json().await.unwrap();
+    let token_a = body["token"].as_str().unwrap();
+
+    // Create a public lobby
+    let response = client
+        .post(format!("http://{}/lobbies", addr))
+        .header("Authorization", format!("Bearer {}", token_a))
+        .header("Content-Type", "application/json")
+        .body(r#"{"is_private": false}"#)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status().as_u16(), 200);
+    let body: Value = response.json().await.unwrap();
+    let lobby_id = body["id"].as_str().unwrap();
+
+    // Verify the lobby exists
+    let response = client
+        .get(format!("http://{}/lobbies", addr))
+        .header("Authorization", format!("Bearer {}", token_a))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status().as_u16(), 200);
+    let lobbies: Vec<Value> = response.json().await.unwrap();
+    assert_eq!(lobbies.len(), 1);
+    assert_eq!(lobbies[0]["id"].as_str().unwrap(), lobby_id);
+
+    // Delete the lobby
+    let response = client
+        .delete(format!("http://{}/lobbies/{}", addr, lobby_id))
+        .header("Authorization", format!("Bearer {}", token_a))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status().as_u16(), 200);
+
+    // Verify the lobby no longer exists
+    let response = client
+        .get(format!("http://{}/lobbies", addr))
+        .header("Authorization", format!("Bearer {}", token_a))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status().as_u16(), 200);
+    let lobbies: Vec<Value> = response.json().await.unwrap();
+    assert_eq!(lobbies.len(), 0);
+
+    // Attempt to delete a non-existent lobby should return 404
+    let response = client
+        .delete(format!("http://{}/lobbies/{}", addr, lobby_id))
+        .header("Authorization", format!("Bearer {}", token_a))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status().as_u16(), 404);
+}
+
+#[tokio::test]
+#[serial]
+async fn test_delete_lobby_with_multiple_players() {
+    let addr = spawn_app().await;
+    let client = Client::new();
+
+    // --- Player A (Host) ---
+    let response = client
+        .post(format!("http://{}/auth/challenge", addr))
+        .send()
+        .await
+        .unwrap();
+    let body: Value = response.json().await.unwrap();
+    let challenge_a = body["challenge"].as_str().unwrap();
+    let login_payload_a =
+        helpers::generate_login_payload("player_a", "pass_a", challenge_a).unwrap();
+    let response = client
+        .post(format!("http://{}/auth/login", addr))
+        .header("Content-Type", "application/json")
+        .body(login_payload_a)
+        .send()
+        .await
+        .unwrap();
+    let body: Value = response.json().await.unwrap();
+    let token_a = body["token"].as_str().unwrap();
+
+    // --- Player B (Joins the lobby) ---
+    let response = client
+        .post(format!("http://{}/auth/challenge", addr))
+        .send()
+        .await
+        .unwrap();
+    let body: Value = response.json().await.unwrap();
+    let challenge_b = body["challenge"].as_str().unwrap();
+    let login_payload_b =
+        helpers::generate_login_payload("player_b", "pass_b", challenge_b).unwrap();
+    let response = client
+        .post(format!("http://{}/auth/login", addr))
+        .header("Content-Type", "application/json")
+        .body(login_payload_b)
+        .send()
+        .await
+        .unwrap();
+    let body: Value = response.json().await.unwrap();
+    let token_b = body["token"].as_str().unwrap();
+
+    // Create a public lobby
+    let response = client
+        .post(format!("http://{}/lobbies", addr))
+        .header("Authorization", format!("Bearer {}", token_a))
+        .header("Content-Type", "application/json")
+        .body(r#"{"is_private": false}"#)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status().as_u16(), 200);
+    let body: Value = response.json().await.unwrap();
+    let lobby_id = body["id"].as_str().unwrap();
+
+    // Player B joins the lobby
+    let response = client
+        .post(format!("http://{}/lobbies/{}/join", addr, lobby_id))
+        .header("Authorization", format!("Bearer {}", token_b))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status().as_u16(), 200);
+
+    // Both players should see the lobby
+    let response = client
+        .get(format!("http://{}/lobbies", addr))
+        .header("Authorization", format!("Bearer {}", token_a))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status().as_u16(), 200);
+    let lobbies_a: Vec<Value> = response.json().await.unwrap();
+    assert_eq!(lobbies_a.len(), 1);
+
+    let response = client
+        .get(format!("http://{}/lobbies", addr))
+        .header("Authorization", format!("Bearer {}", token_b))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status().as_u16(), 200);
+    let lobbies_b: Vec<Value> = response.json().await.unwrap();
+    assert_eq!(lobbies_b.len(), 1);
+
+    // The owner (Player A) deletes the lobby
+    let response = client
+        .delete(format!("http://{}/lobbies/{}", addr, lobby_id))
+        .header("Authorization", format!("Bearer {}", token_a))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status().as_u16(), 200);
+
+    // Neither player should see the lobby anymore
+    let response = client
+        .get(format!("http://{}/lobbies", addr))
+        .header("Authorization", format!("Bearer {}", token_a))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status().as_u16(), 200);
+    let lobbies_a: Vec<Value> = response.json().await.unwrap();
+    assert_eq!(lobbies_a.len(), 0);
+
+    let response = client
+        .get(format!("http://{}/lobbies", addr))
+        .header("Authorization", format!("Bearer {}", token_b))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status().as_u16(), 200);
+    let lobbies_b: Vec<Value> = response.json().await.unwrap();
+    assert_eq!(lobbies_b.len(), 0);
+}
+
+#[tokio::test]
+#[serial]
+async fn test_player_can_leave_lobby() {
+    let addr = spawn_app().await;
+    let client = Client::new();
+
+    // --- Player A (creates lobby) ---
+    let response = client
+        .post(format!("http://{}/auth/challenge", addr))
+        .send()
+        .await
+        .unwrap();
+    let body: Value = response.json().await.unwrap();
+    let challenge_a = body["challenge"].as_str().unwrap();
+    let login_payload_a =
+        helpers::generate_login_payload("player_a", "pass_a", challenge_a).unwrap();
+    let response = client
+        .post(format!("http://{}/auth/login", addr))
+        .header("Content-Type", "application/json")
+        .body(login_payload_a)
+        .send()
+        .await
+        .unwrap();
+    let body: Value = response.json().await.unwrap();
+    let token_a = body["token"].as_str().unwrap();
+
+    // Create a public lobby
+    let response = client
+        .post(format!("http://{}/lobbies", addr))
+        .header("Authorization", format!("Bearer {}", token_a))
+        .header("Content-Type", "application/json")
+        .body(r#"{"is_private": false}"#)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status().as_u16(), 200);
+    let body: Value = response.json().await.unwrap();
+    let lobby_id = body["id"].as_str().unwrap();
+
+    // --- Player B (joins lobby) ---
+    let response = client
+        .post(format!("http://{}/auth/challenge", addr))
+        .send()
+        .await
+        .unwrap();
+    let body: Value = response.json().await.unwrap();
+    let challenge_b = body["challenge"].as_str().unwrap();
+    let login_payload_b =
+        helpers::generate_login_payload("player_b", "pass_b", challenge_b).unwrap();
+    let response = client
+        .post(format!("http://{}/auth/login", addr))
+        .header("Content-Type", "application/json")
+        .body(login_payload_b)
+        .send()
+        .await
+        .unwrap();
+    let body: Value = response.json().await.unwrap();
+    let token_b = body["token"].as_str().unwrap();
+
+    // Player B joins
+    let response = client
+        .post(format!("http://{}/lobbies/{}/join", addr, lobby_id))
+        .header("Authorization", format!("Bearer {}", token_b))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status().as_u16(), 200);
+
+    // Verify both players are in the lobby
+    let response = client
+        .get(format!("http://{}/lobbies", addr))
+        .header("Authorization", format!("Bearer {}", token_a))
+        .send()
+        .await
+        .unwrap();
+    let lobbies: Vec<Value> = response.json().await.unwrap();
+    assert_eq!(lobbies.len(), 1);
+    assert_eq!(lobbies[0]["players"].as_array().unwrap().len(), 2);
+
+    // Player B leaves (using DELETE endpoint)
+    let response = client
+        .delete(format!("http://{}/lobbies/{}", addr, lobby_id))
+        .header("Authorization", format!("Bearer {}", token_b))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status().as_u16(), 200);
+
+    // Verify Player B is no longer in the lobby but lobby still exists
+    let response = client
+        .get(format!("http://{}/lobbies", addr))
+        .header("Authorization", format!("Bearer {}", token_a))
+        .send()
+        .await
+        .unwrap();
+    let lobbies: Vec<Value> = response.json().await.unwrap();
+    assert_eq!(lobbies.len(), 1); // Lobby still exists
+    assert_eq!(lobbies[0]["players"].as_array().unwrap().len(), 1); // Only owner left
+}
+
+#[tokio::test]
+#[serial]
+async fn test_owner_deletes_lobby_completely() {
+    let addr = spawn_app().await;
+    let client = Client::new();
+
+    // --- Player A (creates lobby) ---
+    let response = client
+        .post(format!("http://{}/auth/challenge", addr))
+        .send()
+        .await
+        .unwrap();
+    let body: Value = response.json().await.unwrap();
+    let challenge_a = body["challenge"].as_str().unwrap();
+    let login_payload_a =
+        helpers::generate_login_payload("player_a", "pass_a", challenge_a).unwrap();
+    let response = client
+        .post(format!("http://{}/auth/login", addr))
+        .header("Content-Type", "application/json")
+        .body(login_payload_a)
+        .send()
+        .await
+        .unwrap();
+    let body: Value = response.json().await.unwrap();
+    let token_a = body["token"].as_str().unwrap();
+
+    // --- Player B (joins lobby) ---
+    let response = client
+        .post(format!("http://{}/auth/challenge", addr))
+        .send()
+        .await
+        .unwrap();
+    let body: Value = response.json().await.unwrap();
+    let challenge_b = body["challenge"].as_str().unwrap();
+    let login_payload_b =
+        helpers::generate_login_payload("player_b", "pass_b", challenge_b).unwrap();
+    let response = client
+        .post(format!("http://{}/auth/login", addr))
+        .header("Content-Type", "application/json")
+        .body(login_payload_b)
+        .send()
+        .await
+        .unwrap();
+    let body: Value = response.json().await.unwrap();
+    let token_b = body["token"].as_str().unwrap();
+
+    // Create lobby
+    let response = client
+        .post(format!("http://{}/lobbies", addr))
+        .header("Authorization", format!("Bearer {}", token_a))
+        .header("Content-Type", "application/json")
+        .body(r#"{"is_private": false}"#)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status().as_u16(), 200);
+    let body: Value = response.json().await.unwrap();
+    let lobby_id = body["id"].as_str().unwrap();
+
+    // Player B joins
+    let response = client
+        .post(format!("http://{}/lobbies/{}/join", addr, lobby_id))
+        .header("Authorization", format!("Bearer {}", token_b))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status().as_u16(), 200);
+
+    // Owner (Player A) deletes the lobby
+    let response = client
+        .delete(format!("http://{}/lobbies/{}", addr, lobby_id))
+        .header("Authorization", format!("Bearer {}", token_a))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status().as_u16(), 200);
+
+    // Verify lobby no longer exists for anyone
+    let response = client
+        .get(format!("http://{}/lobbies", addr))
+        .header("Authorization", format!("Bearer {}", token_a))
+        .send()
+        .await
+        .unwrap();
+    let lobbies_a: Vec<Value> = response.json().await.unwrap();
+    assert_eq!(lobbies_a.len(), 0);
+
+    let response = client
+        .get(format!("http://{}/lobbies", addr))
+        .header("Authorization", format!("Bearer {}", token_b))
+        .send()
+        .await
+        .unwrap();
+    let lobbies_b: Vec<Value> = response.json().await.unwrap();
+    assert_eq!(lobbies_b.len(), 0);
+}
+
+#[tokio::test]
+#[serial]
+async fn test_cannot_create_multiple_lobbies() {
+    let addr = spawn_app().await;
+    let client = Client::new();
+
+    // Authenticate
+    let response = client
+        .post(format!("http://{}/auth/challenge", addr))
+        .send()
+        .await
+        .unwrap();
+    let body: Value = response.json().await.unwrap();
+    let challenge = body["challenge"].as_str().unwrap();
+    let login_payload = helpers::generate_login_payload("player_a", "pass_a", challenge).unwrap();
+    let response = client
+        .post(format!("http://{}/auth/login", addr))
+        .header("Content-Type", "application/json")
+        .body(login_payload)
+        .send()
+        .await
+        .unwrap();
+    let body: Value = response.json().await.unwrap();
+    let token = body["token"].as_str().unwrap();
+
+    // Create first lobby
+    let response = client
+        .post(format!("http://{}/lobbies", addr))
+        .header("Authorization", format!("Bearer {}", token))
+        .header("Content-Type", "application/json")
+        .body(r#"{"is_private": false}"#)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status().as_u16(), 200);
+
+    // Attempt to create second lobby should fail with 409 CONFLICT
+    let response = client
+        .post(format!("http://{}/lobbies", addr))
+        .header("Authorization", format!("Bearer {}", token))
+        .header("Content-Type", "application/json")
+        .body(r#"{"is_private": false}"#)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status().as_u16(), 409);
+}
+
+#[tokio::test]
+#[serial]
+async fn test_cannot_join_multiple_lobbies() {
+    let addr = spawn_app().await;
+    let client = Client::new();
+
+    // --- Player A (creates lobby 1) ---
+    let response = client
+        .post(format!("http://{}/auth/challenge", addr))
+        .send()
+        .await
+        .unwrap();
+    let body: Value = response.json().await.unwrap();
+    let challenge_a = body["challenge"].as_str().unwrap();
+    let login_payload_a =
+        helpers::generate_login_payload("player_a", "pass_a", challenge_a).unwrap();
+    let response = client
+        .post(format!("http://{}/auth/login", addr))
+        .header("Content-Type", "application/json")
+        .body(login_payload_a)
+        .send()
+        .await
+        .unwrap();
+    let body: Value = response.json().await.unwrap();
+    let token_a = body["token"].as_str().unwrap();
+
+    let response = client
+        .post(format!("http://{}/lobbies", addr))
+        .header("Authorization", format!("Bearer {}", token_a))
+        .header("Content-Type", "application/json")
+        .body(r#"{"is_private": false}"#)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status().as_u16(), 200);
+    let body: Value = response.json().await.unwrap();
+    let _lobby_1_id = body["id"].as_str().unwrap();
+
+    // --- Player B (creates lobby 2) ---
+    let response = client
+        .post(format!("http://{}/auth/challenge", addr))
+        .send()
+        .await
+        .unwrap();
+    let body: Value = response.json().await.unwrap();
+    let challenge_b = body["challenge"].as_str().unwrap();
+    let login_payload_b =
+        helpers::generate_login_payload("player_b", "pass_b", challenge_b).unwrap();
+    let response = client
+        .post(format!("http://{}/auth/login", addr))
+        .header("Content-Type", "application/json")
+        .body(login_payload_b)
+        .send()
+        .await
+        .unwrap();
+    let body: Value = response.json().await.unwrap();
+    let token_b = body["token"].as_str().unwrap();
+
+    let response = client
+        .post(format!("http://{}/lobbies", addr))
+        .header("Authorization", format!("Bearer {}", token_b))
+        .header("Content-Type", "application/json")
+        .body(r#"{"is_private": false}"#)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status().as_u16(), 200);
+    let body: Value = response.json().await.unwrap();
+    let lobby_2_id = body["id"].as_str().unwrap();
+
+    // --- Player A attempts to join lobby 2 (should fail with 409) ---
+    let response = client
+        .post(format!("http://{}/lobbies/{}/join", addr, lobby_2_id))
+        .header("Authorization", format!("Bearer {}", token_a))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status().as_u16(), 409); // CONFLICT
+}
+
+#[tokio::test]
+#[serial]
+async fn test_can_rejoin_same_lobby() {
+    let addr = spawn_app().await;
+    let client = Client::new();
+
+    // Authenticate
+    let response = client
+        .post(format!("http://{}/auth/challenge", addr))
+        .send()
+        .await
+        .unwrap();
+    let body: Value = response.json().await.unwrap();
+    let challenge = body["challenge"].as_str().unwrap();
+    let login_payload = helpers::generate_login_payload("player_a", "pass_a", challenge).unwrap();
+    let response = client
+        .post(format!("http://{}/auth/login", addr))
+        .header("Content-Type", "application/json")
+        .body(login_payload)
+        .send()
+        .await
+        .unwrap();
+    let body: Value = response.json().await.unwrap();
+    let token = body["token"].as_str().unwrap();
+
+    // Create lobby
+    let response = client
+        .post(format!("http://{}/lobbies", addr))
+        .header("Authorization", format!("Bearer {}", token))
+        .header("Content-Type", "application/json")
+        .body(r#"{"is_private": false}"#)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status().as_u16(), 200);
+    let body: Value = response.json().await.unwrap();
+    let lobby_id = body["id"].as_str().unwrap();
+
+    // Rejoin same lobby should succeed (idempotent)
+    let response = client
+        .post(format!("http://{}/lobbies/{}/join", addr, lobby_id))
+        .header("Authorization", format!("Bearer {}", token))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status().as_u16(), 200);
+}
+
+#[tokio::test]
+#[serial]
+async fn test_invite_friends_to_private_lobby() {
+    let addr = spawn_app().await;
+    let client = Client::new();
+
+    // --- Player A (creates private lobby without whitelist) ---
+    let response = client
+        .post(format!("http://{}/auth/challenge", addr))
+        .send()
+        .await
+        .unwrap();
+    let body: Value = response.json().await.unwrap();
+    let challenge_a = body["challenge"].as_str().unwrap();
+    let login_payload_a =
+        helpers::generate_login_payload("player_a", "pass_a", challenge_a).unwrap();
+    let response = client
+        .post(format!("http://{}/auth/login", addr))
+        .header("Content-Type", "application/json")
+        .body(login_payload_a)
+        .send()
+        .await
+        .unwrap();
+    let body: Value = response.json().await.unwrap();
+    let token_a = body["token"].as_str().unwrap();
+
+    // Create private lobby without whitelist
+    let response = client
+        .post(format!("http://{}/lobbies", addr))
+        .header("Authorization", format!("Bearer {}", token_a))
+        .header("Content-Type", "application/json")
+        .body(r#"{"is_private": true}"#)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status().as_u16(), 200);
+    let body: Value = response.json().await.unwrap();
+    let lobby_id = body["id"].as_str().unwrap();
+
+    // --- Player B (tries to join without being invited) ---
+    let response = client
+        .post(format!("http://{}/auth/challenge", addr))
+        .send()
+        .await
+        .unwrap();
+    let body: Value = response.json().await.unwrap();
+    let challenge_b = body["challenge"].as_str().unwrap();
+    let login_payload_b =
+        helpers::generate_login_payload("player_b", "pass_b", challenge_b).unwrap();
+    let response = client
+        .post(format!("http://{}/auth/login", addr))
+        .header("Content-Type", "application/json")
+        .body(login_payload_b)
+        .send()
+        .await
+        .unwrap();
+    let body: Value = response.json().await.unwrap();
+    let token_b = body["token"].as_str().unwrap();
+
+    // Player B should not see the private lobby
+    let response = client
+        .get(format!("http://{}/lobbies", addr))
+        .header("Authorization", format!("Bearer {}", token_b))
+        .send()
+        .await
+        .unwrap();
+    let lobbies: Vec<Value> = response.json().await.unwrap();
+    assert_eq!(lobbies.len(), 0);
+
+    // Get Player B's public key
+    let pubkey_b = helpers::get_public_key("player_b", "pass_b").unwrap();
+
+    // Player A invites Player B
+    let invite_body = json!({
+        "player_public_keys": [pubkey_b]
+    });
+    let response = client
+        .post(format!("http://{}/lobbies/{}/invite", addr, lobby_id))
+        .header("Authorization", format!("Bearer {}", token_a))
+        .header("Content-Type", "application/json")
+        .body(invite_body.to_string())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status().as_u16(), 200);
+
+    // Now Player B should see the lobby
+    let response = client
+        .get(format!("http://{}/lobbies", addr))
+        .header("Authorization", format!("Bearer {}", token_b))
+        .send()
+        .await
+        .unwrap();
+    let lobbies: Vec<Value> = response.json().await.unwrap();
+    assert_eq!(lobbies.len(), 1);
+    assert_eq!(lobbies[0]["id"].as_str().unwrap(), lobby_id);
+
+    // Player B should be able to join
+    let response = client
+        .post(format!("http://{}/lobbies/{}/join", addr, lobby_id))
+        .header("Authorization", format!("Bearer {}", token_b))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status().as_u16(), 200);
+}
+
+#[tokio::test]
+#[serial]
+async fn test_only_owner_can_invite() {
+    let addr = spawn_app().await;
+    let client = Client::new();
+
+    // --- Player A (creates lobby) ---
+    let response = client
+        .post(format!("http://{}/auth/challenge", addr))
+        .send()
+        .await
+        .unwrap();
+    let body: Value = response.json().await.unwrap();
+    let challenge_a = body["challenge"].as_str().unwrap();
+    let login_payload_a =
+        helpers::generate_login_payload("player_a", "pass_a", challenge_a).unwrap();
+    let response = client
+        .post(format!("http://{}/auth/login", addr))
+        .header("Content-Type", "application/json")
+        .body(login_payload_a)
+        .send()
+        .await
+        .unwrap();
+    let body: Value = response.json().await.unwrap();
+    let token_a = body["token"].as_str().unwrap();
+
+    let response = client
+        .post(format!("http://{}/lobbies", addr))
+        .header("Authorization", format!("Bearer {}", token_a))
+        .header("Content-Type", "application/json")
+        .body(r#"{"is_private": false}"#)
+        .send()
+        .await
+        .unwrap();
+    let body: Value = response.json().await.unwrap();
+    let lobby_id = body["id"].as_str().unwrap();
+
+    // --- Player B (joins lobby) ---
+    let response = client
+        .post(format!("http://{}/auth/challenge", addr))
+        .send()
+        .await
+        .unwrap();
+    let body: Value = response.json().await.unwrap();
+    let challenge_b = body["challenge"].as_str().unwrap();
+    let login_payload_b =
+        helpers::generate_login_payload("player_b", "pass_b", challenge_b).unwrap();
+    let response = client
+        .post(format!("http://{}/auth/login", addr))
+        .header("Content-Type", "application/json")
+        .body(login_payload_b)
+        .send()
+        .await
+        .unwrap();
+    let body: Value = response.json().await.unwrap();
+    let token_b = body["token"].as_str().unwrap();
+
+    let response = client
+        .post(format!("http://{}/lobbies/{}/join", addr, lobby_id))
+        .header("Authorization", format!("Bearer {}", token_b))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status().as_u16(), 200);
+
+    // --- Player C ---
+    let pubkey_c = helpers::get_public_key("player_c", "pass_c").unwrap();
+
+    // Player B (non-owner) tries to invite Player C - should fail
+    let invite_body = json!({
+        "player_public_keys": [pubkey_c]
+    });
+    let response = client
+        .post(format!("http://{}/lobbies/{}/invite", addr, lobby_id))
+        .header("Authorization", format!("Bearer {}", token_b))
+        .header("Content-Type", "application/json")
+        .body(invite_body.to_string())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status().as_u16(), 403); // Forbidden
+}
